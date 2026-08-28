@@ -858,6 +858,7 @@ def process_project_type(
     page,
     province,
     project_type,
+    download_root=None,
 ):
     config = PROJECT_CONFIG[project_type]
 
@@ -892,10 +893,8 @@ def process_project_type(
         }
 
     download_dir = (
-        Path("downloads")
-        / province.upper()
-        / project_type
-    )
+        Path(download_root) if download_root is not None else Path("downloads")
+    ) / province.upper() / project_type
 
     download_dir.mkdir(
         parents=True,
@@ -946,7 +945,7 @@ def process_project_type(
     }
 
 
-def main(province="ADANA"):
+def main(province="ADANA", download_root=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="msedge",
@@ -967,6 +966,7 @@ def main(province="ADANA"):
                 page=page,
                 province=province,
                 project_type="EK-1",
+                download_root=download_root,
             )
 
             print()
@@ -979,6 +979,7 @@ def main(province="ADANA"):
                 page=page,
                 province=province,
                 project_type="EK-2",
+                download_root=download_root,
             )
 
         finally:
@@ -997,6 +998,8 @@ def main(province="ADANA"):
                 f"{summary['downloaded']} başarılı/mevcut | "
                 f"{summary['failed']} hata"
             )
+
+        return summaries
 
 
 if __name__ == "__main__":
