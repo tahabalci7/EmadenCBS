@@ -20,7 +20,7 @@ class DatumDetector:
             geographic_datum = "WGS-84"
 
         zone_match = re.search(
-            r"\bZON\s*[:\-]?\s*(35|36|37|38|39)\b",
+            r"\bZON(?:E)?\s*[:\-]?\s*(35|36|37|38|39)\b",
             upper
         )
 
