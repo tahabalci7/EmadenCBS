@@ -208,6 +208,86 @@ def _find_coordinate_sequence(tokens):
 
     token_count = len(tokens)
 
+    # Geçerli koordinatlar zaten bağımsız tokenlar
+    # halindeyse, kısa sayısal etiketleri ilk UTM
+    # değeriyle birleştiren fragment adaylarından önce
+    # doğrudan bu diziyi kullan.
+    direct_values = []
+
+    for token in tokens:
+        if not re.fullmatch(
+            r"[+-]?\d*(?:[.,]\d*)?",
+            token,
+        ):
+            direct_values.append(None)
+            continue
+
+        try:
+            direct_values.append(
+                float(
+                    _clean_numeric_token(token)
+                )
+            )
+        except ValueError:
+            direct_values.append(None)
+
+    for y_start, utm_y in enumerate(
+        direct_values
+    ):
+        if (
+            utm_y is None
+            or not 100000 <= utm_y <= 999999
+        ):
+            continue
+
+        for x_start in range(
+            y_start + 1,
+            min(y_start + 4, token_count),
+        ):
+            utm_x = direct_values[x_start]
+
+            if (
+                utm_x is None
+                or not 3000000 <= utm_x <= 5000000
+            ):
+                continue
+
+            for lat_start in range(
+                x_start + 1,
+                token_count,
+            ):
+                latitude = direct_values[
+                    lat_start
+                ]
+
+                if (
+                    latitude is None
+                    or not 35 <= latitude <= 43
+                ):
+                    continue
+
+                for lon_start in range(
+                    lat_start + 1,
+                    token_count,
+                ):
+                    longitude = direct_values[
+                        lon_start
+                    ]
+
+                    if (
+                        longitude is None
+                        or not 25 <= longitude <= 46
+                    ):
+                        continue
+
+                    return {
+                        "label_end": y_start,
+                        "utm_y": utm_y,
+                        "utm_x": utm_x,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    }
+
     for y_start in range(token_count):
         for y_end, utm_y in _join_numeric_fragments(
             tokens,
