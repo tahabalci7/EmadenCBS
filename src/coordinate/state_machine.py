@@ -1035,6 +1035,7 @@ def parse_coordinate_blocks(
             "longitude": longitude,
             "polygon_group": polygon_group,
             "polygon_heading": polygon_heading,
+            "table_type_override": current_area_type,
             "source_page": source_page,
             "source_method": source_method,
         }
@@ -1070,6 +1071,12 @@ def detect_area_type(line):
         )
 
         if "RUHSAT ALANI" in normalized:
+            return "RUHSAT_ALANI"
+
+        if (
+            "RUHSAT SINIR" in normalized
+            and "KOORDINAT" in normalized
+        ):
             return "RUHSAT_ALANI"
 
         if (
