@@ -946,9 +946,7 @@ def process_project_type(
     }
 
 
-def main():
-    province = "ADANA"
-
+def main(province="ADANA"):
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="msedge",
