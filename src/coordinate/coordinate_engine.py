@@ -1,5 +1,6 @@
 import hashlib
 import re
+import unicodedata
 
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.datum_detector import DatumDetector
@@ -52,6 +53,7 @@ class CoordinateEngine:
 
         results = []
         seen = set()
+        observation_records = []
 
         for table_index, table in enumerate(
             tables,
@@ -77,6 +79,24 @@ class CoordinateEngine:
                     ]
                 ),
             )
+
+            observation_records.append(
+                cls._build_table_identity_record(
+                    table=table,
+                    line_sources=(
+                        table_line_sources[
+                            table_index - 1
+                        ]
+                    ),
+                    table_points=table_points,
+                    source_observation_identity=(
+                        observation_identities[
+                            table_index - 1
+                        ]
+                    ),
+                )
+            )
+
             for point in table_points:
                 polygon_group = point.get(
                     "polygon_group",
@@ -121,6 +141,21 @@ class CoordinateEngine:
                         ),
                     )
                 )
+
+        table_identities = (
+            cls._build_table_identities(
+                observation_records
+            )
+        )
+
+        for result in results:
+            result[
+                "source_table_identity"
+            ] = table_identities[
+                result[
+                    "source_observation_identity"
+                ]
+            ]
 
         results.sort(
             key=cls._priority_score,
@@ -332,6 +367,290 @@ class CoordinateEngine:
         return "\n".join(
             normalized_lines
         )
+
+    @classmethod
+    def _build_table_identity_record(
+        cls,
+        table,
+        line_sources,
+        table_points,
+        source_observation_identity,
+    ):
+        source_methods = []
+        source_pages = []
+
+        for source in line_sources:
+            source_method = source.get(
+                "source_method"
+            )
+            source_page = source.get(
+                "source_page"
+            )
+
+            if (
+                source_method
+                and source_method
+                not in source_methods
+            ):
+                source_methods.append(
+                    source_method
+                )
+
+            if isinstance(source_page, int):
+                source_pages.append(
+                    source_page
+                )
+
+        normalized_heading = (
+            TableClassifier._normalize(
+                TableClassifier._extract_heading(
+                    table
+                )
+            ).strip()
+        )
+
+        table_number_match = re.match(
+            r"^TABLO\s+(\d+)\b",
+            normalized_heading,
+        )
+
+        return {
+            "source_observation_identity": (
+                source_observation_identity
+            ),
+            "source_method": (
+                source_methods[0]
+                if len(source_methods) == 1
+                else None
+            ),
+            "page_start": (
+                min(source_pages)
+                if source_pages
+                else None
+            ),
+            "page_end": (
+                max(source_pages)
+                if source_pages
+                else None
+            ),
+            "normalized_heading": (
+                normalized_heading
+            ),
+            "table_number": (
+                table_number_match.group(1)
+                if table_number_match
+                else None
+            ),
+            "point_count": len(
+                table_points
+            ),
+            "coordinates": tuple(
+                (
+                    point["utm_y"],
+                    point["utm_x"],
+                )
+                for point in table_points
+            ),
+            "labels": tuple(
+                cls._normalize_table_label(
+                    point["label"]
+                )
+                for point in table_points
+            ),
+        }
+
+    @classmethod
+    def _build_table_identities(
+        cls,
+        observation_records,
+    ):
+        identities = {
+            record[
+                "source_observation_identity"
+            ]: cls._make_table_identity(
+                "observation="
+                + record[
+                    "source_observation_identity"
+                ]
+            )
+            for record in observation_records
+        }
+
+        candidates = {
+            record[
+                "source_observation_identity"
+            ]: []
+            for record in observation_records
+        }
+
+        for record_index, record_a in enumerate(
+            observation_records
+        ):
+            for record_b in observation_records[
+                record_index + 1:
+            ]:
+                if not cls._is_confirmed_table_duplicate(
+                    record_a,
+                    record_b,
+                ):
+                    continue
+
+                observation_a = record_a[
+                    "source_observation_identity"
+                ]
+                observation_b = record_b[
+                    "source_observation_identity"
+                ]
+
+                candidates[observation_a].append(
+                    observation_b
+                )
+                candidates[observation_b].append(
+                    observation_a
+                )
+
+        records_by_identity = {
+            record[
+                "source_observation_identity"
+            ]: record
+            for record in observation_records
+        }
+
+        for observation_a, matches in candidates.items():
+            if len(matches) != 1:
+                continue
+
+            observation_b = matches[0]
+
+            if candidates.get(
+                observation_b
+            ) != [observation_a]:
+                continue
+
+            record_a = records_by_identity[
+                observation_a
+            ]
+            record_b = records_by_identity[
+                observation_b
+            ]
+
+            text_layer_record = (
+                record_a
+                if record_a["source_method"]
+                == "text_layer"
+                else record_b
+            )
+
+            shared_identity = (
+                cls._make_table_identity(
+                    "text_layer_observation="
+                    + text_layer_record[
+                        "source_observation_identity"
+                    ]
+                )
+            )
+
+            identities[observation_a] = (
+                shared_identity
+            )
+            identities[observation_b] = (
+                shared_identity
+            )
+
+        return identities
+
+    @staticmethod
+    def _is_confirmed_table_duplicate(
+        record_a,
+        record_b,
+    ):
+        if {
+            record_a["source_method"],
+            record_b["source_method"],
+        } != {
+            "text_layer",
+            "ocr",
+        }:
+            return False
+
+        if (
+            record_a["page_start"] is None
+            or record_a["page_end"] is None
+            or record_b["page_start"] is None
+            or record_b["page_end"] is None
+        ):
+            return False
+
+        if (
+            record_a["page_start"]
+            > record_b["page_end"]
+            or record_b["page_start"]
+            > record_a["page_end"]
+        ):
+            return False
+
+        if (
+            not record_a["normalized_heading"]
+            or record_a["normalized_heading"]
+            != record_b["normalized_heading"]
+        ):
+            return False
+
+        if (
+            record_a["point_count"] == 0
+            or record_a["point_count"]
+            != record_b["point_count"]
+        ):
+            return False
+
+        if sorted(
+            record_a["coordinates"]
+        ) != sorted(
+            record_b["coordinates"]
+        ):
+            return False
+
+        if record_a["labels"] != record_b["labels"]:
+            return False
+
+        table_number_a = record_a[
+            "table_number"
+        ]
+        table_number_b = record_b[
+            "table_number"
+        ]
+
+        if (
+            table_number_a is not None
+            and table_number_b is not None
+            and table_number_a != table_number_b
+        ):
+            return False
+
+        return True
+
+    @staticmethod
+    def _normalize_table_label(
+        label,
+    ):
+        return unicodedata.normalize(
+            "NFC",
+            " ".join(
+                str(label).split()
+            ),
+        ).casefold()
+
+    @staticmethod
+    def _make_table_identity(
+        canonical_anchor,
+    ):
+        digest = hashlib.sha256(
+            canonical_anchor.encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+        return "tbl_" + digest
 
     @classmethod
     def _match_table_line_sources(
