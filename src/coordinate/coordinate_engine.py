@@ -1,3 +1,4 @@
+import hashlib
 import re
 
 from src.coordinate.table_classifier import TableClassifier
@@ -39,6 +40,13 @@ class CoordinateEngine:
             cls._match_table_line_sources(
                 text,
                 tables,
+            )
+        )
+
+        observation_identities = (
+            cls._build_observation_identities(
+                tables,
+                table_line_sources,
             )
         )
 
@@ -106,6 +114,11 @@ class CoordinateEngine:
                         section=section,
                         table_type=point_table_type,
                         datum_info=datum_info,
+                        source_observation_identity=(
+                            observation_identities[
+                                table_index - 1
+                            ]
+                        ),
                     )
                 )
 
@@ -124,6 +137,7 @@ class CoordinateEngine:
         section,
         table_type,
         datum_info,
+        source_observation_identity,
     ):
         return {
             "line": 0,
@@ -193,7 +207,131 @@ class CoordinateEngine:
             "source_method": point.get(
                 "source_method"
             ),
+            "source_observation_identity": (
+                source_observation_identity
+            ),
         }
+
+    @classmethod
+    def _build_observation_identities(
+        cls,
+        tables,
+        table_line_sources,
+    ):
+        identities = []
+        fingerprint_counts = {}
+
+        for table, line_sources in zip(
+            tables,
+            table_line_sources,
+        ):
+            source_methods = []
+            source_pages = []
+
+            for source in line_sources:
+                source_method = source.get(
+                    "source_method"
+                )
+                source_page = source.get(
+                    "source_page"
+                )
+
+                if (
+                    source_method
+                    and source_method
+                    not in source_methods
+                ):
+                    source_methods.append(
+                        source_method
+                    )
+
+                if isinstance(source_page, int):
+                    source_pages.append(
+                        source_page
+                    )
+
+            page_start = (
+                min(source_pages)
+                if source_pages
+                else None
+            )
+            page_end = (
+                max(source_pages)
+                if source_pages
+                else None
+            )
+
+            normalized_table = (
+                cls._normalize_observation_text(
+                    table
+                )
+            )
+
+            canonical_fingerprint = (
+                "source_method="
+                + ",".join(source_methods)
+                + "\nsource_page_start="
+                + str(page_start)
+                + "\nsource_page_end="
+                + str(page_end)
+                + "\ntable_text=\n"
+                + normalized_table
+            )
+
+            base_digest = hashlib.sha256(
+                canonical_fingerprint.encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+
+            collision_index = (
+                fingerprint_counts.get(
+                    base_digest,
+                    0,
+                )
+            )
+            fingerprint_counts[base_digest] = (
+                collision_index + 1
+            )
+
+            if collision_index:
+                identity_digest = hashlib.sha256(
+                    (
+                        canonical_fingerprint
+                        + "\ncollision="
+                        + str(collision_index + 1)
+                    ).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+            else:
+                identity_digest = base_digest
+
+            identities.append(
+                "obs_" + identity_digest
+            )
+
+        return identities
+
+    @staticmethod
+    def _normalize_observation_text(
+        table_text,
+    ):
+        normalized_lines = []
+
+        for raw_line in table_text.splitlines():
+            normalized_line = " ".join(
+                raw_line.split()
+            )
+
+            if normalized_line:
+                normalized_lines.append(
+                    normalized_line
+                )
+
+        return "\n".join(
+            normalized_lines
+        )
 
     @classmethod
     def _match_table_line_sources(
