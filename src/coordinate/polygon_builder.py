@@ -68,6 +68,12 @@ class PolygonBuilder:
                         "projection",
                         "Bilinmiyor",
                     ),
+                    "projected_crs_epsg": item.get(
+                        "projected_crs_epsg"
+                    ),
+                    "projected_crs_name": item.get(
+                        "projected_crs_name"
+                    ),
                     "points": [],
                 }
 
@@ -81,6 +87,18 @@ class PolygonBuilder:
                     ),
                     "longitude": item.get(
                         "longitude"
+                    ),
+                    "projected_crs_epsg": item.get(
+                        "projected_crs_epsg"
+                    ),
+                    "projected_crs_name": item.get(
+                        "projected_crs_name"
+                    ),
+                    "transformed_longitude": item.get(
+                        "transformed_longitude"
+                    ),
+                    "transformed_latitude": item.get(
+                        "transformed_latitude"
                     ),
                 }
             )
