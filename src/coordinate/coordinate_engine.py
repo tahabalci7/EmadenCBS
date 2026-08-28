@@ -1,3 +1,5 @@
+import re
+
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.datum_detector import DatumDetector
 from src.coordinate.state_machine import parse_coordinate_blocks
@@ -5,6 +7,24 @@ from src.coordinate.table_detector import TableDetector
 
 
 class CoordinateEngine:
+
+    PAGE_HEADER_PATTERN = re.compile(
+        r"^--- Sayfa (?P<page>\d+) "
+        r"\[(?P<source>[^\]\r\n]+)\] ---$"
+    )
+
+    SOURCE_METHODS = {
+        "OCR": "ocr",
+        "PDF METİN KATMANI": "text_layer",
+        (
+            "PDF METİN KATMANI "
+            "- TESSERACT YOK"
+        ): "text_layer",
+        (
+            "PDF METİN KATMANI "
+            "- OCR BAŞARISIZ"
+        ): "text_layer",
+    }
 
     @classmethod
     def extract_coordinates(cls, text):
@@ -14,6 +34,13 @@ class CoordinateEngine:
 
         if not tables:
             return []
+
+        table_line_sources = (
+            cls._match_table_line_sources(
+                text,
+                tables,
+            )
+        )
 
         results = []
         seen = set()
@@ -35,7 +62,12 @@ class CoordinateEngine:
             )
 
             table_points = parse_coordinate_blocks(
-                table
+                table,
+                line_sources=(
+                    table_line_sources[
+                        table_index - 1
+                    ]
+                ),
             )
             for point in table_points:
                 polygon_group = point.get(
@@ -155,7 +187,157 @@ class CoordinateEngine:
             "longitude": point[
                 "longitude"
             ],
+            "source_page": point.get(
+                "source_page"
+            ),
+            "source_method": point.get(
+                "source_method"
+            ),
         }
+
+    @classmethod
+    def _match_table_line_sources(
+        cls,
+        text,
+        tables,
+    ):
+        raw_lines = cls._build_raw_line_sources(
+            text
+        )
+
+        table_sources = []
+        cursor = 0
+
+        for table in tables:
+            table_lines = [
+                line.strip()
+                for line in table.splitlines()
+                if line.strip()
+            ]
+
+            empty_sources = [
+                {
+                    "source_page": None,
+                    "source_method": None,
+                }
+                for _ in table_lines
+            ]
+
+            if not table_lines:
+                table_sources.append(
+                    empty_sources
+                )
+                continue
+
+            match_start = None
+            last_start = (
+                len(raw_lines)
+                - len(table_lines)
+            )
+
+            for start in range(
+                cursor,
+                last_start + 1,
+            ):
+                if all(
+                    raw_lines[
+                        start + offset
+                    ]["text"]
+                    == table_line
+                    for offset, table_line in enumerate(
+                        table_lines
+                    )
+                ):
+                    match_start = start
+                    break
+
+            if match_start is None:
+                table_sources.append(
+                    empty_sources
+                )
+                continue
+
+            matched_sources = []
+
+            for offset in range(
+                len(table_lines)
+            ):
+                raw_line = raw_lines[
+                    match_start + offset
+                ]
+
+                matched_sources.append(
+                    {
+                        "source_page": raw_line[
+                            "source_page"
+                        ],
+                        "source_method": raw_line[
+                            "source_method"
+                        ],
+                    }
+                )
+
+            table_sources.append(
+                matched_sources
+            )
+
+            cursor = (
+                match_start
+                + len(table_lines)
+            )
+
+        return table_sources
+
+    @classmethod
+    def _build_raw_line_sources(
+        cls,
+        text,
+    ):
+        lines = []
+        source_page = None
+        source_method = None
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+
+            if not line:
+                continue
+
+            header_match = (
+                cls.PAGE_HEADER_PATTERN.fullmatch(
+                    line
+                )
+            )
+
+            if header_match:
+                source = header_match.group(
+                    "source"
+                )
+
+                source_method = (
+                    cls.SOURCE_METHODS.get(
+                        source
+                    )
+                )
+
+                if source_method is None:
+                    source_page = None
+                else:
+                    source_page = int(
+                        header_match.group(
+                            "page"
+                        )
+                    )
+
+            lines.append(
+                {
+                    "text": line,
+                    "source_page": source_page,
+                    "source_method": source_method,
+                }
+            )
+
+        return lines
 
     @staticmethod
     def _detect_section(

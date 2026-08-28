@@ -627,6 +627,7 @@ def parse_row_coordinate(
 
 def parse_coordinate_blocks(
     text: str,
+    line_sources=None,
 ):
     lines = [
         line.strip()
@@ -636,6 +637,46 @@ def parse_coordinate_blocks(
 
     results = []
     seen = set()
+
+    def get_line_source(line_index):
+        if (
+            line_sources is None
+            or line_index < 0
+            or line_index >= len(line_sources)
+        ):
+            return None, None
+
+        line_source = line_sources[
+            line_index
+        ]
+
+        if not isinstance(
+            line_source,
+            dict,
+        ):
+            return None, None
+
+        source_page = line_source.get(
+            "source_page"
+        )
+        source_method = line_source.get(
+            "source_method"
+        )
+
+        if source_method not in {
+            "text_layer",
+            "ocr",
+        }:
+            return None, None
+
+        if (
+            not isinstance(source_page, int)
+            or isinstance(source_page, bool)
+            or source_page < 1
+        ):
+            return None, None
+
+        return source_page, source_method
 
     upper_text = text.upper()
 
@@ -762,7 +803,7 @@ def parse_coordinate_blocks(
     current_polygon_heading = ""
     current_area_type = None
 
-    for line in lines:
+    for line_index, line in enumerate(lines):
         detected_area_type = detect_area_type(
             line
         )
@@ -837,6 +878,13 @@ def parse_coordinate_blocks(
         # Satır bazlı tespit edilen alan türünü
         # her nokta için table_type_override olarak sakla.
         point["table_type_override"] = current_area_type
+
+        (
+            point["source_page"],
+            point["source_method"],
+        ) = get_line_source(
+            line_index
+        )
 
         key = (
             point["polygon_group"],
@@ -972,6 +1020,13 @@ def parse_coordinate_blocks(
             polygon_group = "DEFAULT"
             polygon_heading = ""
 
+        (
+            source_page,
+            source_method,
+        ) = get_line_source(
+            i + 1
+        )
+
         point = {
             "label": normalized_label,
             "utm_y": utm_y,
@@ -980,6 +1035,8 @@ def parse_coordinate_blocks(
             "longitude": longitude,
             "polygon_group": polygon_group,
             "polygon_heading": polygon_heading,
+            "source_page": source_page,
+            "source_method": source_method,
         }
 
         key = (
