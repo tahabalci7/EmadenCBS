@@ -3,6 +3,7 @@ import re
 import unicodedata
 
 from src.coordinate.table_classifier import TableClassifier
+from src.coordinate.crs_resolver import CRSResolver
 from src.coordinate.datum_detector import DatumDetector
 from src.coordinate.state_machine import parse_coordinate_blocks
 from src.coordinate.table_detector import TableDetector
@@ -71,6 +72,30 @@ class CoordinateEngine:
                 table
             )
 
+            crs_metadata = {
+                "datum": datum_info[
+                    "utm_datum"
+                ],
+                "type": "UTM",
+                "zone": datum_info[
+                    "zone"
+                ],
+                "dom": datum_info[
+                    "dom"
+                ],
+                "projection": datum_info[
+                    "projection"
+                ],
+            }
+
+            projected_crs = (
+                CRSResolver.resolve_projected_crs(
+                    crs_metadata
+                )
+            )
+
+            transformed_coordinate_cache = {}
+
             table_points = parse_coordinate_blocks(
                 table,
                 line_sources=(
@@ -127,6 +152,17 @@ class CoordinateEngine:
                     "table_type_override"
                 ) or table_type
 
+                transform_metadata = (
+                    cls._build_transform_metadata(
+                        point=point,
+                        crs_metadata=crs_metadata,
+                        projected_crs=projected_crs,
+                        coordinate_cache=(
+                            transformed_coordinate_cache
+                        ),
+                    )
+                )
+
                 results.append(
                     cls._make_result(
                         point=point,
@@ -138,6 +174,9 @@ class CoordinateEngine:
                             observation_identities[
                                 table_index - 1
                             ]
+                        ),
+                        transform_metadata=(
+                            transform_metadata
                         ),
                     )
                 )
@@ -173,6 +212,7 @@ class CoordinateEngine:
         table_type,
         datum_info,
         source_observation_identity,
+        transform_metadata,
     ):
         return {
             "line": 0,
@@ -245,7 +285,80 @@ class CoordinateEngine:
             "source_observation_identity": (
                 source_observation_identity
             ),
+            "projected_crs_epsg": (
+                transform_metadata[
+                    "projected_crs_epsg"
+                ]
+            ),
+            "projected_crs_name": (
+                transform_metadata[
+                    "projected_crs_name"
+                ]
+            ),
+            "transformed_longitude": (
+                transform_metadata[
+                    "transformed_longitude"
+                ]
+            ),
+            "transformed_latitude": (
+                transform_metadata[
+                    "transformed_latitude"
+                ]
+            ),
         }
+
+    @classmethod
+    def _build_transform_metadata(
+        cls,
+        point,
+        crs_metadata,
+        projected_crs,
+        coordinate_cache,
+    ):
+        metadata = {
+            "projected_crs_epsg": None,
+            "projected_crs_name": None,
+            "transformed_longitude": None,
+            "transformed_latitude": None,
+        }
+
+        if projected_crs is None:
+            return metadata
+
+        metadata[
+            "projected_crs_epsg"
+        ] = projected_crs.to_epsg()
+        metadata[
+            "projected_crs_name"
+        ] = projected_crs.name
+
+        coordinate_key = (
+            point["utm_y"],
+            point["utm_x"],
+        )
+
+        if coordinate_key not in coordinate_cache:
+            coordinate_cache[coordinate_key] = (
+                CRSResolver.transform_to_wgs84(
+                    easting=point["utm_y"],
+                    northing=point["utm_x"],
+                    metadata=crs_metadata,
+                )
+            )
+
+        transformed = coordinate_cache[
+            coordinate_key
+        ]
+
+        if transformed is None:
+            return metadata
+
+        (
+            metadata["transformed_longitude"],
+            metadata["transformed_latitude"],
+        ) = transformed
+
+        return metadata
 
     @classmethod
     def _build_observation_identities(
