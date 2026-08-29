@@ -91,6 +91,94 @@ def discover_pdfs(root, output):
     )
 
 
+def load_input_manifest(manifest_path, root):
+    manifest_path = Path(manifest_path)
+    root = Path(root).resolve()
+    lines = manifest_path.read_text(
+        encoding="utf-8-sig"
+    ).splitlines()
+    records = []
+    normalized_paths = []
+    seen_paths = set()
+
+    for line_number, raw_line in enumerate(lines, start=1):
+        manifest_entry = raw_line.strip()
+        if not manifest_entry:
+            continue
+
+        relative_path = Path(manifest_entry)
+        if relative_path.is_absolute():
+            raise ValueError(
+                f"Manifest satırı absolute path içeriyor "
+                f"({line_number}): {manifest_entry}"
+            )
+        if ".." in relative_path.parts:
+            raise ValueError(
+                f"Manifest path traversal içeriyor "
+                f"({line_number}): {manifest_entry}"
+            )
+
+        resolved_path = (root / relative_path).resolve()
+        if not _is_within(resolved_path, root):
+            raise ValueError(
+                f"Manifest yolu root dışında "
+                f"({line_number}): {manifest_entry}"
+            )
+        if resolved_path.suffix.casefold() != ".pdf":
+            raise ValueError(
+                f"Manifest satırı PDF değil "
+                f"({line_number}): {manifest_entry}"
+            )
+        if not resolved_path.is_file():
+            raise ValueError(
+                f"Manifest PDF bulunamadı "
+                f"({line_number}): {manifest_entry}"
+            )
+
+        normalized_relative = resolved_path.relative_to(
+            root
+        ).as_posix()
+        duplicate_key = os.path.normcase(
+            str(resolved_path)
+        ).casefold()
+        if duplicate_key in seen_paths:
+            raise ValueError(
+                f"Manifest duplicate path içeriyor "
+                f"({line_number}): {manifest_entry}"
+            )
+        seen_paths.add(duplicate_key)
+        normalized_paths.append(normalized_relative)
+
+        stat = resolved_path.stat()
+        province, project_type = _path_context(
+            Path(normalized_relative)
+        )
+        records.append(
+            {
+                "path": resolved_path,
+                "relative_path": normalized_relative,
+                "province": province,
+                "project_type": project_type,
+                "file_size": stat.st_size,
+                "modified_time_ns": stat.st_mtime_ns,
+                "modified_time": datetime.fromtimestamp(
+                    stat.st_mtime,
+                    tz=timezone.utc,
+                ).isoformat(),
+            }
+        )
+
+    manifest_text = "\n".join(normalized_paths)
+    manifest_metadata = {
+        "input_manifest_used": True,
+        "input_manifest_sha256": hashlib.sha256(
+            manifest_text.encode("utf-8")
+        ).hexdigest(),
+        "input_manifest_count": len(normalized_paths),
+    }
+    return records, manifest_metadata
+
+
 def select_pilot(records, sample_size=None):
     if sample_size is None or sample_size >= len(records):
         return list(records)
@@ -261,9 +349,31 @@ def run_benchmark(
     time_budget_minutes=None,
     run_id=None,
     defer_heavy_fallback_if_useful=False,
+    input_manifest_path=None,
 ):
     root = Path(root).resolve()
     output = Path(output).resolve()
+
+    if input_manifest_path is not None and (
+        sample_size is not None or class_quotas
+    ):
+        raise ValueError(
+            "Input manifest sample-size veya class-sample ile "
+            "birlikte kullanılamaz."
+        )
+
+    manifest_records = None
+    manifest_metadata = {
+        "input_manifest_used": False,
+        "input_manifest_sha256": "",
+        "input_manifest_count": 0,
+    }
+    if input_manifest_path is not None:
+        manifest_records, manifest_metadata = load_input_manifest(
+            input_manifest_path,
+            root,
+        )
+
     output.mkdir(parents=True, exist_ok=True)
 
     if resume and not run_id:
@@ -286,6 +396,7 @@ def run_benchmark(
                 defer_heavy_fallback_if_useful
             ),
             resume=resume,
+            manifest_metadata=manifest_metadata,
         )
         return _run_benchmark_locked(
             root=root,
@@ -300,6 +411,7 @@ def run_benchmark(
                 defer_heavy_fallback_if_useful
             ),
             run_metadata=run_metadata,
+            manifest_records=manifest_records,
         )
 
 
@@ -314,6 +426,7 @@ def _run_benchmark_locked(
     time_budget_minutes,
     defer_heavy_fallback_if_useful,
     run_metadata,
+    manifest_records,
 ):
     all_records = discover_pdfs(root, output_root)
     jsonl_path = run_dir / "benchmark_results.jsonl"
@@ -327,7 +440,27 @@ def _run_benchmark_locked(
         if _has_identity(result)
     }
 
-    if class_quotas:
+    if manifest_records is not None:
+        selected_records = [dict(record) for record in manifest_records]
+        if preflight_results_path is not None:
+            preflight_results = _load_results_file(
+                Path(preflight_results_path)
+            )
+            preflight_by_identity = {
+                _identity(result): result
+                for result in preflight_results
+                if _has_identity(result)
+            }
+            for record in selected_records:
+                preflight = preflight_by_identity.get(
+                    _identity(record)
+                )
+                if preflight is not None:
+                    record["preflight_class"] = preflight.get(
+                        "classification",
+                        "",
+                    )
+    elif class_quotas:
         preflight_results = _load_results_file(
             Path(preflight_results_path)
         )
@@ -936,6 +1069,7 @@ def _prepare_run_metadata(
     run_id,
     defer_heavy_fallback_if_useful,
     resume,
+    manifest_metadata,
 ):
     metadata_path = Path(run_dir) / "run_metadata.json"
     if resume:
@@ -954,6 +1088,20 @@ def _prepare_run_metadata(
                 "Resume deferred-mode ayarı mevcut run ile "
                 "uyuşmuyor."
             )
+        manifest_defaults = {
+            "input_manifest_used": False,
+            "input_manifest_sha256": "",
+            "input_manifest_count": 0,
+        }
+        for field, default in manifest_defaults.items():
+            if metadata.get(field, default) != manifest_metadata.get(
+                field,
+                default,
+            ):
+                raise RuntimeError(
+                    "Resume input manifest mevcut run ile "
+                    "uyuşmuyor."
+                )
         return metadata
 
     metadata = {
@@ -962,6 +1110,7 @@ def _prepare_run_metadata(
             defer_heavy_fallback_if_useful
         ),
         "created_at": datetime.now(timezone.utc).isoformat(),
+        **manifest_metadata,
     }
     _write_summary_atomic(metadata_path, metadata)
     return metadata
@@ -1135,6 +1284,11 @@ def build_argument_parser():
         ),
     )
     parser.add_argument(
+        "--input-manifest",
+        type=Path,
+        help="Satır başına bir relative PDF path içeren UTF-8 dosya",
+    )
+    parser.add_argument(
         "--preflight-results",
         type=Path,
         help="Stratified seçim için preflight CSV veya JSONL dosyası",
@@ -1188,6 +1342,7 @@ def main(argv=None):
         defer_heavy_fallback_if_useful=(
             args.defer_heavy_if_useful
         ),
+        input_manifest_path=args.input_manifest,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return summary
