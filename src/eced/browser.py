@@ -568,6 +568,7 @@ def extract_download_items(session, report_url):
 
     for raw_url in matches:
         raw_url = html.unescape(raw_url)
+        source_href = raw_url
         absolute_url = urljoin(report_url, raw_url)
 
         query = parse_qs(
@@ -595,6 +596,7 @@ def extract_download_items(session, report_url):
             {
                 "file_name": file_name,
                 "download_url": absolute_url,
+                "source_href": source_href,
             }
         )
 
@@ -629,7 +631,7 @@ def download_pdf_stream(
             f"  ↳ Zaten mevcut, atlandı: "
             f"{save_path.name}"
         )
-        return True
+        return True, None
 
     temp_path = save_path.with_suffix(
         save_path.suffix + ".part"
@@ -708,7 +710,11 @@ def download_pdf_stream(
             if temp_path.exists():
                 temp_path.unlink()
 
-            return False
+            return (
+                False,
+                "PDF doğrulaması başarısız: "
+                f"{save_path.name}",
+            )
 
         temp_path.replace(
             save_path
@@ -718,7 +724,7 @@ def download_pdf_stream(
             f"  ✓ Kaydedildi: {save_path}"
         )
 
-        return True
+        return True, None
 
     except Exception as exc:
         print(
@@ -732,15 +738,73 @@ def download_pdf_stream(
         except OSError:
             pass
 
-        return False
+        return (
+            False,
+            f"{type(exc).__name__}: {exc}",
+        )
+
+
+def build_failure_record(
+    province,
+    project_type,
+    report,
+    report_id,
+    error_stage,
+    error,
+    attempts,
+    item=None,
+    save_path=None,
+):
+    item = item or {}
+
+    return {
+        "province": province,
+        "project_type": project_type,
+        "district": report.get("district"),
+        "project_title": report.get(
+            "project_name"
+        ),
+        "project_owner": report.get("owner"),
+        "report_id": report_id,
+        "source_filename": item.get(
+            "file_name"
+        ),
+        "filename": (
+            save_path.name
+            if save_path is not None
+            else None
+        ),
+        "download_url": item.get(
+            "download_url"
+        ),
+        "report_url": report.get(
+            "report_url"
+        ),
+        "source_href": item.get(
+            "source_href"
+        ),
+        "error_stage": error_stage,
+        "error": str(error),
+        "attempts": attempts,
+    }
 
 
 def download_project_reports(
     session,
     report,
     download_dir,
+    province=None,
+    project_type=None,
 ):
     report_url = report["report_url"]
+
+    report_id = (
+        urlparse(report_url)
+        .path
+        .rstrip("/")
+        .split("/")[-1]
+        or None
+    )
 
     try:
         items = extract_download_items(
@@ -752,23 +816,51 @@ def download_project_reports(
         print(
             f"  ✗ ÇED Raporu sayfası okunamadı: {exc}"
         )
-        return 0, 1
+        return (
+            0,
+            1,
+            [
+                build_failure_record(
+                    province=province,
+                    project_type=project_type,
+                    report=report,
+                    report_id=report_id,
+                    error_stage="REPORT_PAGE",
+                    error=(
+                        f"{type(exc).__name__}: "
+                        f"{exc}"
+                    ),
+                    attempts=1,
+                )
+            ],
+        )
 
     if not items:
         print(
             "  ✗ PDF bağlantısı bulunamadı."
         )
-        return 0, 1
+        return (
+            0,
+            1,
+            [
+                build_failure_record(
+                    province=province,
+                    project_type=project_type,
+                    report=report,
+                    report_id=report_id,
+                    error_stage=(
+                        "PDF_LINK_DISCOVERY"
+                    ),
+                    error=(
+                        "PDF bağlantısı bulunamadı."
+                    ),
+                    attempts=1,
+                )
+            ],
+        )
 
     success = 0
     failed_items = []
-
-    report_id = (
-        urlparse(report_url)
-        .path
-        .rstrip("/")
-        .split("/")[-1]
-    )
 
     # -----------------------------
     # 1. TUR
@@ -789,7 +881,7 @@ def download_project_reports(
             / unique_file_name
         )
 
-        ok = download_pdf_stream(
+        ok, error = download_pdf_stream(
             session=session,
             download_url=item["download_url"],
             save_path=save_path,
@@ -803,6 +895,8 @@ def download_project_reports(
                 (
                     item,
                     save_path,
+                    error,
+                    1,
                 )
             )
 
@@ -823,14 +917,19 @@ def download_project_reports(
 
         retry_failed = []
 
-        for item, save_path in failed_items:
+        for (
+            item,
+            save_path,
+            _error,
+            attempts,
+        ) in failed_items:
             print()
             print(
                 f"  ↳ Tekrar deneniyor: "
                 f"{save_path.name}"
             )
 
-            ok = download_pdf_stream(
+            ok, error = download_pdf_stream(
                 session=session,
                 download_url=item["download_url"],
                 save_path=save_path,
@@ -844,6 +943,8 @@ def download_project_reports(
                     (
                         item,
                         save_path,
+                        error,
+                        attempts + 1,
                     )
                 )
 
@@ -853,7 +954,27 @@ def download_project_reports(
         failed_items
     )
 
-    return success, failed
+    failure_records = [
+        build_failure_record(
+            province=province,
+            project_type=project_type,
+            report=report,
+            report_id=report_id,
+            item=item,
+            save_path=save_path,
+            error_stage="PDF_DOWNLOAD",
+            error=error,
+            attempts=attempts,
+        )
+        for (
+            item,
+            save_path,
+            error,
+            attempts,
+        ) in failed_items
+    ]
+
+    return success, failed, failure_records
 def process_project_type(
     page,
     province,
@@ -890,6 +1011,7 @@ def process_project_type(
             "reports": 0,
             "downloaded": 0,
             "failed": 0,
+            "failure_records": [],
         }
 
     download_dir = (
@@ -905,6 +1027,7 @@ def process_project_type(
 
     downloaded = 0
     failed = 0
+    failure_records = []
 
     for index, report in enumerate(
         reports,
@@ -920,16 +1043,25 @@ def process_project_type(
             f"  İlçe: {report['district']}"
         )
 
-        success_count, failed_count = (
+        (
+            success_count,
+            failed_count,
+            report_failures,
+        ) = (
             download_project_reports(
                 session=session,
                 report=report,
                 download_dir=download_dir,
+                province=province,
+                project_type=project_type,
             )
         )
 
         downloaded += success_count
         failed += failed_count
+        failure_records.extend(
+            report_failures
+        )
 
     print()
     print(
@@ -942,10 +1074,15 @@ def process_project_type(
         "reports": len(reports),
         "downloaded": downloaded,
         "failed": failed,
+        "failure_records": failure_records,
     }
 
 
-def main(province="ADANA", download_root=None):
+def main(
+    province="ADANA",
+    download_root=None,
+    failure_records=None,
+):
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="msedge",
@@ -962,12 +1099,22 @@ def main(province="ADANA", download_root=None):
 
         try:
             # EK-1 tamamen bitmeden EK-2 başlamaz.
-            summaries["EK-1"] = process_project_type(
+            ek1_summary = process_project_type(
                 page=page,
                 province=province,
                 project_type="EK-1",
                 download_root=download_root,
             )
+
+            ek1_failures = ek1_summary.pop(
+                "failure_records"
+            )
+            if failure_records is not None:
+                failure_records.extend(
+                    ek1_failures
+                )
+
+            summaries["EK-1"] = ek1_summary
 
             print()
             print(
@@ -975,12 +1122,22 @@ def main(province="ADANA", download_root=None):
                 "Şimdi EK-2 sorgusuna geçiliyor."
             )
 
-            summaries["EK-2"] = process_project_type(
+            ek2_summary = process_project_type(
                 page=page,
                 province=province,
                 project_type="EK-2",
                 download_root=download_root,
             )
+
+            ek2_failures = ek2_summary.pop(
+                "failure_records"
+            )
+            if failure_records is not None:
+                failure_records.extend(
+                    ek2_failures
+                )
+
+            summaries["EK-2"] = ek2_summary
 
         finally:
             context.close()
