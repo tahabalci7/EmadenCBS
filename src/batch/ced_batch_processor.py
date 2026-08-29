@@ -106,6 +106,7 @@ class CEDBatchProcessor:
         self,
         pdf_path,
         project_type,
+        defer_heavy_fallback_if_useful=False,
     ):
         result = {
             "pdf": str(pdf_path),
@@ -121,6 +122,20 @@ class CEDBatchProcessor:
             "failed_pages": 0,
             "ocr_page_numbers": [],
             "extraction_strategy": "",
+            "defer_heavy_fallback_if_useful": bool(
+                defer_heavy_fallback_if_useful
+            ),
+            "result_completeness": "",
+            "has_useful_result": False,
+            "heavy_fallback_deferred": False,
+            "general_fallback_used": False,
+            "final_result_source": "",
+            "pre_fallback_coordinate_count": None,
+            "pre_fallback_polygon_count": None,
+            "pre_fallback_table_count": None,
+            "fallback_coordinate_count": None,
+            "fallback_polygon_count": None,
+            "fallback_table_count": None,
             "text_length": 0,
             "table_count": 0,
             "coordinate_count": 0,
@@ -137,7 +152,10 @@ class CEDBatchProcessor:
 
             ocr_result = (
                 PDFTextExtractionService.extract(
-                    str(pdf_path)
+                    str(pdf_path),
+                    defer_heavy_fallback_if_useful=(
+                        defer_heavy_fallback_if_useful
+                    ),
                 )
             )
 
@@ -203,6 +221,24 @@ class CEDBatchProcessor:
                     "",
                 )
             )
+
+            for diagnostic_field in (
+                "result_completeness",
+                "has_useful_result",
+                "heavy_fallback_deferred",
+                "general_fallback_used",
+                "final_result_source",
+                "pre_fallback_coordinate_count",
+                "pre_fallback_polygon_count",
+                "pre_fallback_table_count",
+                "fallback_coordinate_count",
+                "fallback_polygon_count",
+                "fallback_table_count",
+            ):
+                if diagnostic_field in ocr_result:
+                    result[diagnostic_field] = ocr_result[
+                        diagnostic_field
+                    ]
 
             extraction_error = ocr_result.get(
                 "error",

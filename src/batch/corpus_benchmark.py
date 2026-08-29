@@ -32,6 +32,18 @@ RESULT_FIELDS = (
     "ocr_pages",
     "ocr_page_numbers",
     "extraction_strategy",
+    "defer_heavy_fallback_if_useful",
+    "result_completeness",
+    "has_useful_result",
+    "heavy_fallback_deferred",
+    "general_fallback_used",
+    "final_result_source",
+    "pre_fallback_coordinate_count",
+    "pre_fallback_polygon_count",
+    "pre_fallback_table_count",
+    "fallback_coordinate_count",
+    "fallback_polygon_count",
+    "fallback_table_count",
     "table_count",
     "coordinate_count",
     "polygon_count",
@@ -243,19 +255,71 @@ def run_benchmark(
     root,
     output,
     sample_size=None,
-    resume=True,
+    resume=False,
     preflight_results_path=None,
     class_quotas=None,
     time_budget_minutes=None,
+    run_id=None,
+    defer_heavy_fallback_if_useful=False,
 ):
     root = Path(root).resolve()
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
 
-    all_records = discover_pdfs(root, output)
-    jsonl_path = output / "benchmark_results.jsonl"
-    csv_path = output / "benchmark_results.csv"
-    summary_path = output / "benchmark_summary.json"
+    if resume and not run_id:
+        raise ValueError("Resume için run_id zorunludur.")
+
+    resolved_run_id = _resolve_run_id(run_id)
+    run_dir = output / "runs" / resolved_run_id
+    run_dir_existed = run_dir.exists()
+    if run_dir_existed and not resume:
+        raise RuntimeError(
+            f"Benchmark run zaten mevcut: {resolved_run_id}"
+        )
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with _run_lock(run_dir):
+        run_metadata = _prepare_run_metadata(
+            run_dir=run_dir,
+            run_id=resolved_run_id,
+            defer_heavy_fallback_if_useful=(
+                defer_heavy_fallback_if_useful
+            ),
+            resume=resume,
+        )
+        return _run_benchmark_locked(
+            root=root,
+            output_root=output,
+            run_dir=run_dir,
+            sample_size=sample_size,
+            resume=resume,
+            preflight_results_path=preflight_results_path,
+            class_quotas=class_quotas,
+            time_budget_minutes=time_budget_minutes,
+            defer_heavy_fallback_if_useful=(
+                defer_heavy_fallback_if_useful
+            ),
+            run_metadata=run_metadata,
+        )
+
+
+def _run_benchmark_locked(
+    root,
+    output_root,
+    run_dir,
+    sample_size,
+    resume,
+    preflight_results_path,
+    class_quotas,
+    time_budget_minutes,
+    defer_heavy_fallback_if_useful,
+    run_metadata,
+):
+    all_records = discover_pdfs(root, output_root)
+    jsonl_path = run_dir / "benchmark_results.jsonl"
+    csv_path = run_dir / "benchmark_results.csv"
+    summary_path = run_dir / "benchmark_summary.json"
+
     prior_results = _load_jsonl(jsonl_path)
     latest_results = {
         _identity(result): result
@@ -336,7 +400,13 @@ def run_benchmark(
                 f"[{index}/{len(selected_records)}] "
                 f"PROCESS | {record['relative_path']}"
             )
-            result = benchmark_pdf(record, root)
+            result = benchmark_pdf(
+                record,
+                root,
+                defer_heavy_fallback_if_useful=(
+                    defer_heavy_fallback_if_useful
+                ),
+            )
             new_processed += 1
             _append_jsonl(jsonl_path, result)
             latest_results[identity] = result
@@ -357,6 +427,7 @@ def run_benchmark(
                     run_wall_seconds=(
                         time.perf_counter() - run_started
                     ),
+                    run_metadata=run_metadata,
                 ),
             )
 
@@ -375,13 +446,18 @@ def run_benchmark(
         new_processed=new_processed,
         stopped_by_time_budget=stopped_by_time_budget,
         run_wall_seconds=time.perf_counter() - run_started,
+        run_metadata=run_metadata,
     )
     _write_csv_atomic(csv_path, current_results)
     _write_summary_atomic(summary_path, summary)
     return summary
 
 
-def benchmark_pdf(record, root):
+def benchmark_pdf(
+    record,
+    root,
+    defer_heavy_fallback_if_useful=False,
+):
     started = time.perf_counter()
     coordinates = []
     processor_result = None
@@ -396,6 +472,9 @@ def benchmark_pdf(record, root):
                 pdf_path=record["path"],
                 project_type=(
                     record["project_type"] or "BILINMIYOR"
+                ),
+                defer_heavy_fallback_if_useful=(
+                    defer_heavy_fallback_if_useful
                 ),
             )
         if captured:
@@ -460,6 +539,44 @@ def benchmark_pdf(record, root):
             "extraction_strategy",
             "",
         ),
+        "defer_heavy_fallback_if_useful": bool(
+            defer_heavy_fallback_if_useful
+        ),
+        "result_completeness": processor_result.get(
+            "result_completeness",
+            "",
+        ),
+        "has_useful_result": bool(
+            processor_result.get("has_useful_result", False)
+        ),
+        "heavy_fallback_deferred": bool(
+            processor_result.get("heavy_fallback_deferred", False)
+        ),
+        "general_fallback_used": bool(
+            processor_result.get("general_fallback_used", False)
+        ),
+        "final_result_source": processor_result.get(
+            "final_result_source",
+            "",
+        ),
+        "pre_fallback_coordinate_count": processor_result.get(
+            "pre_fallback_coordinate_count"
+        ),
+        "pre_fallback_polygon_count": processor_result.get(
+            "pre_fallback_polygon_count"
+        ),
+        "pre_fallback_table_count": processor_result.get(
+            "pre_fallback_table_count"
+        ),
+        "fallback_coordinate_count": processor_result.get(
+            "fallback_coordinate_count"
+        ),
+        "fallback_polygon_count": processor_result.get(
+            "fallback_polygon_count"
+        ),
+        "fallback_table_count": processor_result.get(
+            "fallback_table_count"
+        ),
         "table_count": table_count,
         "coordinate_count": coordinate_count,
         "polygon_count": polygon_count,
@@ -497,6 +614,10 @@ def build_summary(results, total_discovered, total_selected):
     )
     strategies = Counter(
         item.get("extraction_strategy", "") or "unknown"
+        for item in results
+    )
+    completeness = Counter(
+        item.get("result_completeness", "")
         for item in results
     )
 
@@ -545,6 +666,22 @@ def build_summary(results, total_discovered, total_selected):
         "strategy_distribution": dict(
             sorted(strategies.items())
         ),
+        "result_completeness": {
+            status: completeness.get(status, 0)
+            for status in (
+                "COMPLETE",
+                "USEFUL_PARTIAL",
+                "INSUFFICIENT",
+            )
+        },
+        "heavy_fallback_deferred": _count_flag(
+            results,
+            "heavy_fallback_deferred",
+        ),
+        "general_fallback_used": _count_flag(
+            results,
+            "general_fallback_used",
+        ),
         "project_type_breakdown": _project_type_breakdown(
             results
         ),
@@ -580,6 +717,7 @@ def _build_run_summary(
     new_processed,
     stopped_by_time_budget,
     run_wall_seconds,
+    run_metadata=None,
 ):
     summary = build_summary(
         results,
@@ -594,6 +732,8 @@ def _build_run_summary(
             "run_wall_seconds": round(run_wall_seconds, 6),
         }
     )
+    if run_metadata:
+        summary.update(run_metadata)
     return summary
 
 
@@ -735,6 +875,96 @@ def _identity(item):
 
 def _has_identity(item):
     return bool(item.get("relative_path"))
+
+
+def _resolve_run_id(run_id):
+    if run_id is None:
+        timestamp = datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        return f"{timestamp}-{os.getpid()}"
+
+    run_id = str(run_id)
+    if (
+        not run_id
+        or run_id in {".", ".."}
+        or not all(
+            character.isalnum() or character in "-_."
+            for character in run_id
+        )
+    ):
+        raise ValueError(f"Geçersiz run_id: {run_id}")
+    return run_id
+
+
+@contextmanager
+def _run_lock(run_dir):
+    lock_path = Path(run_dir) / ".benchmark.lock"
+    try:
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+        )
+    except FileExistsError as error:
+        raise RuntimeError(
+            f"Benchmark run şu anda kilitli: {run_dir}"
+        ) from error
+
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "pid": os.getpid(),
+                    "started_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                },
+                file,
+                ensure_ascii=False,
+                indent=2,
+            )
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        yield lock_path
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def _prepare_run_metadata(
+    run_dir,
+    run_id,
+    defer_heavy_fallback_if_useful,
+    resume,
+):
+    metadata_path = Path(run_dir) / "run_metadata.json"
+    if resume:
+        if not metadata_path.exists():
+            raise RuntimeError(
+                f"Resume metadata bulunamadı: {metadata_path}"
+            )
+        with metadata_path.open("r", encoding="utf-8") as file:
+            metadata = json.load(file)
+        if metadata.get("run_id") != run_id:
+            raise RuntimeError("Run metadata run_id ile uyuşmuyor.")
+        if bool(
+            metadata.get("defer_heavy_fallback_if_useful", False)
+        ) != bool(defer_heavy_fallback_if_useful):
+            raise RuntimeError(
+                "Resume deferred-mode ayarı mevcut run ile "
+                "uyuşmuyor."
+            )
+        return metadata
+
+    metadata = {
+        "run_id": run_id,
+        "defer_heavy_fallback_if_useful": bool(
+            defer_heavy_fallback_if_useful
+        ),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_summary_atomic(metadata_path, metadata)
+    return metadata
 
 
 def _load_jsonl(path):
@@ -894,6 +1124,17 @@ def build_argument_parser():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument(
+        "--run-id",
+        help="İzole benchmark run kimliği",
+    )
+    parser.add_argument(
+        "--defer-heavy-if-useful",
+        action="store_true",
+        help=(
+            "Useful partial sonuçta heavy OCR fallback'i erteler"
+        ),
+    )
+    parser.add_argument(
         "--preflight-results",
         type=Path,
         help="Stratified seçim için preflight CSV veya JSONL dosyası",
@@ -922,7 +1163,7 @@ def build_argument_parser():
         dest="resume",
         action="store_false",
     )
-    parser.set_defaults(resume=True)
+    parser.set_defaults(resume=None)
     return parser
 
 
@@ -933,14 +1174,20 @@ def main(argv=None):
         raise SystemExit(
             "--class-sample için --preflight-results gereklidir"
         )
+    if args.resume is True and not args.run_id:
+        raise SystemExit("--resume için --run-id zorunludur")
     summary = run_benchmark(
         root=args.root,
         output=args.output,
         sample_size=args.sample_size,
-        resume=args.resume,
+        resume=(args.resume is True),
         preflight_results_path=args.preflight_results,
         class_quotas=class_quotas,
         time_budget_minutes=args.time_budget_minutes,
+        run_id=args.run_id,
+        defer_heavy_fallback_if_useful=(
+            args.defer_heavy_if_useful
+        ),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return summary
