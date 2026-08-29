@@ -884,12 +884,74 @@ def parse_coordinate_blocks(
     current_area_type = None
     segment_start_index = 0
     segment_has_polygon_heading = False
+    pending_area_heading_lines = []
 
-    for line_index, line in enumerate(lines):
-        detected_area_type = detect_area_type(
-            line
+    def is_pending_area_heading_line(
+        line,
+        point,
+    ):
+        if point is not None:
+            return False
+
+        value = str(line).strip()
+
+        if not value or len(value) > 80:
+            return False
+
+        return bool(
+            re.search(
+                r"[A-Za-zÇĞİÖŞÜçğıöşü]",
+                value,
+            )
         )
 
+    def detect_pending_area_type(line):
+        value = str(line).strip()
+        detected = detect_area_type(value)
+
+        if detected is not None:
+            return detected
+
+        normalized = (
+            value.upper()
+            .replace("İ", "I")
+            .replace("Ş", "S")
+            .replace("Ğ", "G")
+            .replace("Ü", "U")
+            .replace("Ö", "O")
+            .replace("Ç", "C")
+        )
+
+        if not any(
+            boundary in normalized
+            for boundary in (
+                "ALAN",
+                "SAHA",
+                "DEPO",
+                "KOORDINAT",
+                "SINIR",
+            )
+        ):
+            return None
+
+        for count in range(
+            1,
+            len(pending_area_heading_lines) + 1,
+        ):
+            candidate = " ".join(
+                pending_area_heading_lines[-count:]
+                + [value]
+            )
+            detected = detect_area_type(
+                candidate
+            )
+
+            if detected is not None:
+                return detected
+
+        return None
+
+    for line_index, line in enumerate(lines):
         point = parse_row_coordinate(
             line,
             allow_numeric_labels,
@@ -900,7 +962,19 @@ def parse_coordinate_blocks(
                 line
             )
 
+        detected_group = detect_polygon_group(
+            line
+        )
+
+        if detected_group is not None:
+            pending_area_heading_lines.clear()
+
+        detected_area_type = (
+            detect_pending_area_type(line)
+        )
+
         if detected_area_type is not None:
+            pending_area_heading_lines.clear()
             current_area_type = (
                 detected_area_type
             )
@@ -918,11 +992,20 @@ def parse_coordinate_blocks(
                         "table_type_override"
                     ] = detected_area_type
 
-            if (
+            preserve_explicit_empty_segment = (
                 point is None
-                or not (
-                    segment_has_points
-                    or segment_has_polygon_heading
+                and segment_has_polygon_heading
+                and not segment_has_points
+            )
+
+            if (
+                not preserve_explicit_empty_segment
+                and (
+                    point is None
+                    or not (
+                        segment_has_points
+                        or segment_has_polygon_heading
+                    )
                 )
             ):
                 current_polygon_group = "DEFAULT"
@@ -932,11 +1015,9 @@ def parse_coordinate_blocks(
                 segment_start_index = len(
                     results
                 )
-                segment_has_polygon_heading = False
 
-        detected_group = detect_polygon_group(
-            line
-        )
+                if not preserve_explicit_empty_segment:
+                    segment_has_polygon_heading = False
 
         if detected_group is not None:
             (
@@ -952,7 +1033,23 @@ def parse_coordinate_blocks(
             continue
 
         if point is None:
+            if detected_area_type is not None:
+                continue
+
+            if is_pending_area_heading_line(
+                line,
+                point,
+            ):
+                pending_area_heading_lines.append(
+                    line
+                )
+                del pending_area_heading_lines[:-3]
+            else:
+                pending_area_heading_lines.clear()
+
             continue
+
+        pending_area_heading_lines.clear()
 
         point["label"] = normalize_ocr_label(
             point["label"]
@@ -1241,6 +1338,8 @@ def detect_area_type(line):
             "URUN STOK" in normalized
             or "CEVHER STOK" in normalized
             or "TUVENAN" in normalized
+            or "STOK ALANI" in normalized
+            or "STOK SAHASI" in normalized
         ):
             return "STOK_ALANI"
 
