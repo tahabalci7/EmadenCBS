@@ -882,19 +882,57 @@ def parse_coordinate_blocks(
     current_polygon_group = "DEFAULT"
     current_polygon_heading = ""
     current_area_type = None
+    segment_start_index = 0
+    segment_has_polygon_heading = False
 
     for line_index, line in enumerate(lines):
         detected_area_type = detect_area_type(
             line
         )
 
+        point = parse_row_coordinate(
+            line,
+            allow_numeric_labels,
+        )
+
+        if point is None:
+            point = recover_row_coordinate_from_values(
+                line
+            )
+
         if detected_area_type is not None:
             current_area_type = (
                 detected_area_type
             )
 
-            current_polygon_group = "DEFAULT"
-            current_polygon_heading = ""
+            segment_has_points = (
+                len(results)
+                > segment_start_index
+            )
+
+            if point is not None and segment_has_points:
+                for previous_point in results[
+                    segment_start_index:
+                ]:
+                    previous_point[
+                        "table_type_override"
+                    ] = detected_area_type
+
+            if (
+                point is None
+                or not (
+                    segment_has_points
+                    or segment_has_polygon_heading
+                )
+            ):
+                current_polygon_group = "DEFAULT"
+                current_polygon_heading = ""
+
+            if point is None:
+                segment_start_index = len(
+                    results
+                )
+                segment_has_polygon_heading = False
 
         detected_group = detect_polygon_group(
             line
@@ -906,17 +944,12 @@ def parse_coordinate_blocks(
                 current_polygon_heading,
             ) = detected_group
 
-            continue
-
-        point = parse_row_coordinate(
-            line,
-            allow_numeric_labels,
-        )
-
-        if point is None:
-            point = recover_row_coordinate_from_values(
-                line
+            segment_start_index = len(
+                results
             )
+            segment_has_polygon_heading = True
+
+            continue
 
         if point is None:
             continue
@@ -974,6 +1007,12 @@ def parse_coordinate_blocks(
         )
 
         if key in seen:
+            if detected_area_type is not None:
+                segment_start_index = len(
+                    results
+                )
+                segment_has_polygon_heading = False
+
             continue
 
         seen.add(
@@ -983,6 +1022,12 @@ def parse_coordinate_blocks(
         results.append(
             point
         )
+
+        if detected_area_type is not None:
+            segment_start_index = len(
+                results
+            )
+            segment_has_polygon_heading = False
 
     # =========================================================
     # 2. YÖNTEM
