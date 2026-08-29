@@ -1129,7 +1129,8 @@ class MainWindow(QMainWindow):
 
         coordinates = (
             CoordinateEngine.extract_coordinates(
-                raw_text
+                raw_text,
+                pdf_path=self.current_pdf,
             )
         )
 

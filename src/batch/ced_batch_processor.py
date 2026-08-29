@@ -206,7 +206,8 @@ class CEDBatchProcessor:
             coordinates = (
                 CoordinateEngine
                 .extract_coordinates(
-                    raw_text
+                    raw_text,
+                    pdf_path=str(pdf_path),
                 )
             )
 

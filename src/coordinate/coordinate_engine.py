@@ -6,6 +6,9 @@ from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.crs_resolver import CRSResolver
 from src.coordinate.datum_detector import DatumDetector
 from src.coordinate.state_machine import parse_coordinate_blocks
+from src.coordinate.table_area_scope_resolver import (
+    TableAreaScopeResolver,
+)
 from src.coordinate.table_detector import TableDetector
 
 
@@ -30,7 +33,11 @@ class CoordinateEngine:
     }
 
     @classmethod
-    def extract_coordinates(cls, text):
+    def extract_coordinates(
+        cls,
+        text,
+        pdf_path=None,
+    ):
         tables = TableDetector.find_tables(
             text
         )
@@ -195,6 +202,15 @@ class CoordinateEngine:
                     "source_observation_identity"
                 ]
             ]
+
+        if pdf_path is not None:
+            try:
+                TableAreaScopeResolver.apply_pdf(
+                    pdf_path,
+                    results,
+                )
+            except Exception:
+                pass
 
         results.sort(
             key=cls._priority_score,

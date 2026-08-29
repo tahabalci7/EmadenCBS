@@ -68,6 +68,14 @@ class TableLayoutExtractor:
             or []
         )
 
+        try:
+            extracted_rows = list(
+                table.extract()
+                or []
+            )
+        except Exception:
+            extracted_rows = []
+
         rows = []
 
         for row_index, row in enumerate(
@@ -91,6 +99,17 @@ class TableLayoutExtractor:
                         if bbox is not None
                         else None
                     ),
+                    "cell_texts": [
+                        "" if value is None else str(value)
+                        for value in (
+                            (
+                                extracted_rows[row_index]
+                                or []
+                            )
+                            if row_index < len(extracted_rows)
+                            else []
+                        )
+                    ],
                 }
             )
 
