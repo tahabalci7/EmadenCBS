@@ -783,7 +783,7 @@ def parse_coordinate_blocks(
         patterns = [
             r"^\s*(\d+)\s+NOLU\s+POLIGON\b",
             r"^\s*(\d+)\s+NO(?:LU)?\s+POLIGON\b",
-            r"^\s*(\d+)\s*[.)\-:]?\s*POLIGON\b",
+            r"\b(\d+)\s*[.)\-:]?\s*POLIGON\b",
             r"^\s*POLIGON\s*[-.:]?\s*(\d+)\b",
         ]
 
