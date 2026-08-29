@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from src.ocr.ocr_engine import OCREngine
+from src.core.pdf_text_extraction_service import (
+    PDFTextExtractionService,
+)
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.table_detector import TableDetector
@@ -114,6 +116,11 @@ class CEDBatchProcessor:
             "ocr_method": "",
             "page_count": 0,
             "scanned_pages": 0,
+            "text_layer_pages": 0,
+            "ocr_pages": 0,
+            "failed_pages": 0,
+            "ocr_page_numbers": [],
+            "extraction_strategy": "",
             "text_length": 0,
             "table_count": 0,
             "coordinate_count": 0,
@@ -129,9 +136,8 @@ class CEDBatchProcessor:
             # -----------------------------
 
             ocr_result = (
-                OCREngine.extract_text(
-                    str(pdf_path),
-                    max_pages=None,
+                PDFTextExtractionService.extract(
+                    str(pdf_path)
                 )
             )
 
@@ -162,6 +168,59 @@ class CEDBatchProcessor:
                     0,
                 )
             )
+
+            result["text_layer_pages"] = (
+                ocr_result.get(
+                    "text_layer_pages",
+                    0,
+                )
+            )
+
+            result["ocr_pages"] = (
+                ocr_result.get(
+                    "ocr_pages",
+                    0,
+                )
+            )
+
+            result["failed_pages"] = (
+                ocr_result.get(
+                    "failed_pages",
+                    0,
+                )
+            )
+
+            result["ocr_page_numbers"] = list(
+                ocr_result.get(
+                    "ocr_page_numbers",
+                    [],
+                )
+            )
+
+            result["extraction_strategy"] = (
+                ocr_result.get(
+                    "strategy",
+                    "",
+                )
+            )
+
+            extraction_error = ocr_result.get(
+                "error",
+                "",
+            )
+
+            if (
+                not ocr_result.get("success", False)
+                and extraction_error
+            ):
+                result["status"] = "HATA"
+                result["error"] = extraction_error
+
+                print(
+                    f"  ✗ HATA: {extraction_error}"
+                )
+
+                return result
 
             raw_text = (
                 ocr_result.get(
