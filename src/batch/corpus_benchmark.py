@@ -19,6 +19,7 @@ RESULT_FIELDS = (
     "relative_path",
     "province",
     "project_type",
+    "preflight_class",
     "file_size",
     "modified_time",
     "modified_time_ns",
@@ -128,22 +129,130 @@ def select_pilot(records, sample_size=None):
     return selected[:sample_size]
 
 
+def select_stratified_pilot(
+    records,
+    preflight_results,
+    prior_results,
+    class_quotas,
+):
+    preflight_by_identity = {
+        _identity(result): result
+        for result in preflight_results
+        if _has_identity(result)
+    }
+    prior_by_identity = {
+        _identity(result): result
+        for result in prior_results
+        if _has_identity(result)
+        and result.get("benchmark_completed")
+    }
+    annotated = []
+    for record in records:
+        preflight = preflight_by_identity.get(_identity(record))
+        if preflight is None:
+            continue
+        item = dict(record)
+        item["preflight_class"] = preflight.get(
+            "classification",
+            "",
+        )
+        annotated.append(item)
+
+    selected = []
+    selected_identities = set()
+    completed_identities = set(prior_by_identity)
+
+    for classification, quota in class_quotas.items():
+        class_records = [
+            record
+            for record in annotated
+            if record.get("preflight_class") == classification
+        ]
+        completed = [
+            record
+            for record in class_records
+            if _identity(record) in completed_identities
+        ]
+        chosen = select_pilot(completed, sample_size=quota)
+
+        if len(chosen) < quota:
+            candidates = [
+                record
+                for record in class_records
+                if _identity(record) not in completed_identities
+            ]
+            chosen.extend(
+                _fill_balanced_sample(
+                    candidates,
+                    quota - len(chosen),
+                    chosen,
+                    quota,
+                )
+            )
+
+        for record in chosen[:quota]:
+            identity = _identity(record)
+            if identity in selected_identities:
+                continue
+            selected.append(record)
+            selected_identities.add(identity)
+
+    return selected
+
+
+def _fill_balanced_sample(records, count, selected, final_size):
+    if count <= 0:
+        return []
+
+    desired = {
+        "EK-1": final_size // 2,
+        "EK-2": final_size - (final_size // 2),
+    }
+    current = Counter(
+        record.get("project_type", "") for record in selected
+    )
+    picked = []
+    picked_paths = set()
+
+    for project_type in ("EK-1", "EK-2"):
+        needed = max(0, desired[project_type] - current[project_type])
+        grouped = defaultdict(list)
+        for record in records:
+            if record.get("project_type") == project_type:
+                grouped[record.get("province", "")].append(record)
+        chosen = _round_robin_provinces(
+            grouped,
+            min(needed, count - len(picked)),
+        )
+        picked.extend(chosen)
+        picked_paths.update(item["relative_path"] for item in chosen)
+
+    if len(picked) < count:
+        leftovers = [
+            record
+            for record in records
+            if record["relative_path"] not in picked_paths
+        ]
+        leftovers.sort(key=_stable_sample_key)
+        picked.extend(leftovers[: count - len(picked)])
+
+    return picked[:count]
+
+
 def run_benchmark(
     root,
     output,
     sample_size=None,
     resume=True,
+    preflight_results_path=None,
+    class_quotas=None,
+    time_budget_minutes=None,
 ):
     root = Path(root).resolve()
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
 
     all_records = discover_pdfs(root, output)
-    selected_records = select_pilot(
-        all_records,
-        sample_size=sample_size,
-    )
-
     jsonl_path = output / "benchmark_results.jsonl"
     csv_path = output / "benchmark_results.csv"
     summary_path = output / "benchmark_summary.json"
@@ -154,20 +263,55 @@ def run_benchmark(
         if _has_identity(result)
     }
 
+    if class_quotas:
+        preflight_results = _load_results_file(
+            Path(preflight_results_path)
+        )
+        selected_records = select_stratified_pilot(
+            all_records,
+            preflight_results,
+            prior_results,
+            class_quotas,
+        )
+    else:
+        selected_records = select_pilot(
+            all_records,
+            sample_size=sample_size,
+        )
+
     selected_identities = {
         _identity(record) for record in selected_records
     }
+
+    run_started = time.perf_counter()
+    new_processed = 0
+    stopped_by_time_budget = False
+    time_budget_seconds = (
+        time_budget_minutes * 60
+        if time_budget_minutes is not None
+        else None
+    )
 
     try:
         for index, record in enumerate(selected_records, start=1):
             identity = _identity(record)
             previous = latest_results.get(identity)
 
+            if previous and record.get("preflight_class"):
+                previous = dict(previous)
+                previous["preflight_class"] = record[
+                    "preflight_class"
+                ]
+                latest_results[identity] = previous
+
             if (
                 resume
                 and previous
                 and previous.get("benchmark_completed")
-                and previous.get("status") != "HATA"
+                and (
+                    class_quotas
+                    or previous.get("status") != "HATA"
+                )
             ):
                 print(
                     f"[{index}/{len(selected_records)}] "
@@ -175,11 +319,25 @@ def run_benchmark(
                 )
                 continue
 
+            if (
+                time_budget_seconds is not None
+                and new_processed > 0
+                and time.perf_counter() - run_started
+                >= time_budget_seconds
+            ):
+                stopped_by_time_budget = True
+                print(
+                    "Benchmark süre bütçesine ulaştı; "
+                    "yeni PDF başlatılmadı."
+                )
+                break
+
             print(
                 f"[{index}/{len(selected_records)}] "
                 f"PROCESS | {record['relative_path']}"
             )
             result = benchmark_pdf(record, root)
+            new_processed += 1
             _append_jsonl(jsonl_path, result)
             latest_results[identity] = result
             current_results = _selected_latest_results(
@@ -189,10 +347,16 @@ def run_benchmark(
             _write_csv_atomic(csv_path, current_results)
             _write_summary_atomic(
                 summary_path,
-                build_summary(
+                _build_run_summary(
                     current_results,
                     total_discovered=len(all_records),
                     total_selected=len(selected_records),
+                    class_quotas=class_quotas,
+                    new_processed=new_processed,
+                    stopped_by_time_budget=False,
+                    run_wall_seconds=(
+                        time.perf_counter() - run_started
+                    ),
                 ),
             )
 
@@ -203,10 +367,14 @@ def run_benchmark(
         latest_results,
         selected_identities,
     )
-    summary = build_summary(
+    summary = _build_run_summary(
         current_results,
         total_discovered=len(all_records),
         total_selected=len(selected_records),
+        class_quotas=class_quotas,
+        new_processed=new_processed,
+        stopped_by_time_budget=stopped_by_time_budget,
+        run_wall_seconds=time.perf_counter() - run_started,
     )
     _write_csv_atomic(csv_path, current_results)
     _write_summary_atomic(summary_path, summary)
@@ -258,6 +426,7 @@ def benchmark_pdf(record, root):
         "relative_path": record["relative_path"],
         "province": record["province"],
         "project_type": record["project_type"],
+        "preflight_class": record.get("preflight_class", ""),
         "file_size": record["file_size"],
         "modified_time": record["modified_time"],
         "modified_time_ns": record["modified_time_ns"],
@@ -397,7 +566,100 @@ def build_summary(results, total_discovered, total_selected):
             "extraction_yield"
         ]["partially_or_unresolved_crs"],
     }
+    summary["preflight_class_breakdown"] = (
+        _preflight_class_breakdown(results)
+    )
     return summary
+
+
+def _build_run_summary(
+    results,
+    total_discovered,
+    total_selected,
+    class_quotas,
+    new_processed,
+    stopped_by_time_budget,
+    run_wall_seconds,
+):
+    summary = build_summary(
+        results,
+        total_discovered=total_discovered,
+        total_selected=total_selected,
+    )
+    summary.update(
+        {
+            "class_quotas": class_quotas or {},
+            "new_processed": new_processed,
+            "stopped_by_time_budget": stopped_by_time_budget,
+            "run_wall_seconds": round(run_wall_seconds, 6),
+        }
+    )
+    return summary
+
+
+def _preflight_class_breakdown(results):
+    breakdown = {}
+    classifications = sorted(
+        {
+            item.get("preflight_class", "")
+            for item in results
+            if item.get("preflight_class")
+        }
+    )
+
+    for classification in classifications:
+        items = [
+            item
+            for item in results
+            if item.get("preflight_class") == classification
+        ]
+        statuses = Counter(item.get("status", "") for item in items)
+        strategies = Counter(
+            item.get("extraction_strategy", "") or "unknown"
+            for item in items
+        )
+        coordinate_counts = [
+            int(item.get("coordinate_count", 0) or 0)
+            for item in items
+        ]
+        polygon_counts = [
+            int(item.get("polygon_count", 0) or 0)
+            for item in items
+        ]
+        elapsed = [
+            float(item.get("elapsed_seconds", 0) or 0)
+            for item in items
+        ]
+        ocr_counts = [
+            int(item.get("ocr_pages", 0) or 0)
+            for item in items
+            if item.get("ocr_pages", 0)
+        ]
+
+        breakdown[classification] = {
+            "processed": len(items),
+            "status": dict(sorted(statuses.items())),
+            "with_coordinates": _count(items, "coordinate_count"),
+            "with_polygons": _count(items, "polygon_count"),
+            "all_coordinates_transformed": sum(
+                item.get("coordinate_count", 0) > 0
+                and item.get("coordinate_count", 0)
+                == item.get("transformed_coordinate_count", 0)
+                for item in items
+            ),
+            "unresolved_crs": _count_flag(
+                items,
+                "coordinates_with_unresolved_crs",
+            ),
+            "coordinate_count": _distribution(coordinate_counts),
+            "polygon_count": _distribution(polygon_counts),
+            "elapsed_seconds": _distribution(elapsed),
+            "strategy_distribution": dict(sorted(strategies.items())),
+            "ocr_used": len(ocr_counts),
+            "ocr_page_count": _distribution(ocr_counts),
+        }
+
+    return breakdown
 
 
 @contextmanager
@@ -486,6 +748,13 @@ def _load_jsonl(path):
             except json.JSONDecodeError:
                 continue
     return results
+
+
+def _load_results_file(path):
+    if path.suffix.casefold() == ".csv":
+        with path.open("r", encoding="utf-8-sig", newline="") as file:
+            return list(csv.DictReader(file))
+    return _load_jsonl(path)
 
 
 def _append_jsonl(path, result):
@@ -624,6 +893,24 @@ def build_argument_parser():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--sample-size", type=int, default=None)
+    parser.add_argument(
+        "--preflight-results",
+        type=Path,
+        help="Stratified seçim için preflight CSV veya JSONL dosyası",
+    )
+    parser.add_argument(
+        "--class-sample",
+        action="append",
+        default=[],
+        metavar="CLASS=COUNT",
+        help="Tekrarlanabilir preflight sınıf kotası",
+    )
+    parser.add_argument(
+        "--time-budget-minutes",
+        type=float,
+        default=None,
+        help="Tamamlanan PDF sonrasında yeni PDF başlatmama bütçesi",
+    )
     resume_group = parser.add_mutually_exclusive_group()
     resume_group.add_argument(
         "--resume",
@@ -641,14 +928,40 @@ def build_argument_parser():
 
 def main(argv=None):
     args = build_argument_parser().parse_args(argv)
+    class_quotas = _parse_class_quotas(args.class_sample)
+    if class_quotas and args.preflight_results is None:
+        raise SystemExit(
+            "--class-sample için --preflight-results gereklidir"
+        )
     summary = run_benchmark(
         root=args.root,
         output=args.output,
         sample_size=args.sample_size,
         resume=args.resume,
+        preflight_results_path=args.preflight_results,
+        class_quotas=class_quotas,
+        time_budget_minutes=args.time_budget_minutes,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return summary
+
+
+def _parse_class_quotas(values):
+    quotas = {}
+    for value in values:
+        try:
+            classification, count_text = value.rsplit("=", 1)
+            count = int(count_text)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"Geçersiz --class-sample değeri: {value}"
+            ) from exc
+        if not classification or count < 0:
+            raise SystemExit(
+                f"Geçersiz --class-sample değeri: {value}"
+            )
+        quotas[classification] = count
+    return quotas
 
 
 if __name__ == "__main__":
