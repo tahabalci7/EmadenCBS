@@ -2,6 +2,7 @@ import re
 
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.polygon_builder import PolygonBuilder
+from src.coordinate.table_detector import TableDetector
 from src.ocr.ocr_engine import OCREngine
 
 
@@ -89,6 +90,8 @@ class PDFTextExtractionService:
     def extract(cls, pdf_path):
         """PDF için ortak fast/selective/fallback metnini üretir."""
 
+        pre_fallback_result = None
+
         try:
             fast_result = OCREngine.extract_text_layer(
                 pdf_path,
@@ -98,17 +101,19 @@ class PDFTextExtractionService:
             if cls._has_required_polygons(
                 fast_result.get("text", "")
             ):
-                return cls._decorate_result(
-                    fast_result,
-                    method=(
-                        "PDF Metin Katmanı "
-                        "(OCR Gerekmedi)"
-                    ),
-                    strategy="fast_text_layer",
-                    ocr_page_numbers=[],
-                    ocr_attempted_page_numbers=[],
-                    candidate_page_scores={},
-                    full_document_ocr=False,
+                return cls._finalize_without_fallback(
+                    cls._decorate_result(
+                        fast_result,
+                        method=(
+                            "PDF Metin Katmanı "
+                            "(OCR Gerekmedi)"
+                        ),
+                        strategy="fast_text_layer",
+                        ocr_page_numbers=[],
+                        ocr_attempted_page_numbers=[],
+                        candidate_page_scores={},
+                        full_document_ocr=False,
+                    )
                 )
 
             selected = cls._new_selected_result()
@@ -120,14 +125,18 @@ class PDFTextExtractionService:
                 fast_groups,
                 fast_result.get("page_count", 0),
                 selected,
+                base_text=fast_result.get("text", ""),
+            )
+            pre_fallback_result = cls._build_selective_result(
+                fast_result,
+                selected,
+                strategy="selective_ocr_fast_window",
+                candidate_page_scores=fast_scores,
             )
 
             if selected["has_required_polygons"]:
-                return cls._build_selective_result(
-                    fast_result,
-                    selected,
-                    strategy="selective_ocr_fast_window",
-                    candidate_page_scores=fast_scores,
+                return cls._finalize_without_fallback(
+                    pre_fallback_result
                 )
 
             full_result = fast_result
@@ -145,13 +154,15 @@ class PDFTextExtractionService:
                 if cls._has_required_polygons(
                     full_result.get("text", "")
                 ):
-                    return cls._decorate_result(
-                        full_result,
-                        strategy="full_text_layer",
-                        ocr_page_numbers=[],
-                        ocr_attempted_page_numbers=[],
-                        candidate_page_scores=fast_scores,
-                        full_document_ocr=False,
+                    return cls._finalize_without_fallback(
+                        cls._decorate_result(
+                            full_result,
+                            strategy="full_text_layer",
+                            ocr_page_numbers=[],
+                            ocr_attempted_page_numbers=[],
+                            candidate_page_scores=fast_scores,
+                            full_document_ocr=False,
+                        )
                     )
 
                 full_groups, full_scores = cls._target_groups(
@@ -163,25 +174,31 @@ class PDFTextExtractionService:
                     full_groups,
                     full_result.get("page_count", 0),
                     selected,
+                    base_text=full_result.get("text", ""),
+                )
+                pre_fallback_result = cls._build_selective_result(
+                    full_result,
+                    selected,
+                    strategy="selective_ocr_full_discovery",
+                    candidate_page_scores=all_scores,
                 )
 
                 if selected["has_required_polygons"]:
-                    return cls._build_selective_result(
-                        full_result,
-                        selected,
-                        strategy="selective_ocr_full_discovery",
-                        candidate_page_scores=all_scores,
+                    return cls._finalize_without_fallback(
+                        pre_fallback_result
                     )
 
-            return cls._general_fallback(
+            return cls._fallback_with_preservation(
                 pdf_path,
+                pre_fallback_result,
                 reason="targeted_extraction_insufficient",
                 candidate_page_scores=all_scores,
             )
 
         except Exception as error:
-            return cls._general_fallback(
+            return cls._fallback_with_preservation(
                 pdf_path,
+                pre_fallback_result,
                 reason="selective_extraction_error",
                 error=str(error),
             )
@@ -419,7 +436,17 @@ class PDFTextExtractionService:
         groups,
         page_count,
         selected,
+        base_text="",
     ):
+        selected_text = "\n".join(selected["parts"])
+        selected["has_required_polygons"] = (
+            cls._has_required_polygons(
+                base_text + "\n" + selected_text
+            )
+        )
+        if selected["has_required_polygons"]:
+            return
+
         for group in groups:
             group_pages = sorted(
                 {
@@ -454,8 +481,9 @@ class PDFTextExtractionService:
                 cls._page_numbers(group_text, "OCR")
             )
             selected_text = "\n".join(selected["parts"])
+            candidate_text = base_text + "\n" + selected_text
             selected["has_required_polygons"] = (
-                cls._has_required_polygons(selected_text)
+                cls._has_required_polygons(candidate_text)
             )
 
             if selected["has_required_polygons"]:
@@ -562,6 +590,160 @@ class PDFTextExtractionService:
             }
         )
         return result
+
+    @classmethod
+    def _fallback_with_preservation(
+        cls,
+        pdf_path,
+        pre_fallback_result,
+        reason,
+        candidate_page_scores=None,
+        error="",
+    ):
+        fallback_result = cls._general_fallback(
+            pdf_path,
+            reason=reason,
+            candidate_page_scores=candidate_page_scores,
+            error=error,
+        )
+        pre_quality = cls._measure_text_quality(
+            (pre_fallback_result or {}).get("text", "")
+        )
+        fallback_quality = cls._measure_text_quality(
+            fallback_result.get("text", "")
+        )
+
+        has_pre_fallback_text = bool(
+            (pre_fallback_result or {}).get("text", "").strip()
+        )
+        if (
+            has_pre_fallback_text
+            and cls._quality_rank(pre_quality)
+            >= cls._quality_rank(fallback_quality)
+        ):
+            final_result = dict(pre_fallback_result)
+            final_result_source = "pre_fallback"
+        else:
+            final_result = dict(fallback_result)
+            final_result_source = "general_fallback"
+
+        final_quality = (
+            pre_quality
+            if final_result_source == "pre_fallback"
+            else fallback_quality
+        )
+        final_result.update(
+            {
+                "pre_fallback_coordinate_count": pre_quality[
+                    "coordinate_count"
+                ],
+                "pre_fallback_polygon_count": pre_quality[
+                    "polygon_count"
+                ],
+                "pre_fallback_table_count": pre_quality[
+                    "table_count"
+                ],
+                "pre_fallback_has_required_polygons": pre_quality[
+                    "has_required_polygons"
+                ],
+                "general_fallback_used": True,
+                "general_fallback_reason": reason,
+                "fallback_coordinate_count": fallback_quality[
+                    "coordinate_count"
+                ],
+                "fallback_polygon_count": fallback_quality[
+                    "polygon_count"
+                ],
+                "fallback_table_count": fallback_quality[
+                    "table_count"
+                ],
+                "final_result_source": final_result_source,
+                "has_useful_result": final_quality[
+                    "has_useful_result"
+                ],
+                "general_fallback_error": fallback_result.get(
+                    "error",
+                    "",
+                ),
+            }
+        )
+        return final_result
+
+    @classmethod
+    def _finalize_without_fallback(cls, result):
+        final_result = dict(result)
+        quality = cls._measure_text_quality(
+            final_result.get("text", "")
+        )
+        final_result.update(
+            {
+                "general_fallback_used": False,
+                "general_fallback_reason": "",
+                "final_result_source": final_result.get(
+                    "strategy",
+                    "extraction",
+                ),
+                "has_useful_result": quality[
+                    "has_useful_result"
+                ],
+            }
+        )
+        return final_result
+
+    @classmethod
+    def _measure_text_quality(cls, text):
+        if not text.strip():
+            return cls._empty_quality()
+
+        try:
+            tables = TableDetector.find_tables(text)
+            coordinates = CoordinateEngine.extract_coordinates(text)
+            polygons = PolygonBuilder.build(coordinates)
+        except Exception:
+            return cls._empty_quality()
+
+        has_license = any(
+            polygon.get("table_type") == "RUHSAT_ALANI"
+            for polygon in polygons
+        )
+        has_ced_or_project = any(
+            polygon.get("table_type")
+            in {
+                "CED_ALANI",
+                "MEVCUT_CED_ALANI",
+                "YENI_CED_ALANI",
+                "PROJE_ALANI",
+                "ISLETME_IZIN_ALANI",
+            }
+            for polygon in polygons
+        )
+        return {
+            "coordinate_count": len(coordinates),
+            "polygon_count": len(polygons),
+            "table_count": len(tables),
+            "has_required_polygons": (
+                has_license and has_ced_or_project
+            ),
+            "has_useful_result": bool(polygons),
+        }
+
+    @staticmethod
+    def _empty_quality():
+        return {
+            "coordinate_count": 0,
+            "polygon_count": 0,
+            "table_count": 0,
+            "has_required_polygons": False,
+            "has_useful_result": False,
+        }
+
+    @staticmethod
+    def _quality_rank(quality):
+        return (
+            quality["polygon_count"],
+            quality["coordinate_count"],
+            quality["table_count"],
+        )
 
     @classmethod
     def _decorate_result(cls, result, **metadata):
