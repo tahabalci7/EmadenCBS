@@ -87,7 +87,11 @@ class PDFTextExtractionService:
     }
 
     @classmethod
-    def extract(cls, pdf_path):
+    def extract(
+        cls,
+        pdf_path,
+        defer_heavy_fallback_if_useful=False,
+    ):
         """PDF için ortak fast/selective/fallback metnini üretir."""
 
         pre_fallback_result = None
@@ -188,6 +192,14 @@ class PDFTextExtractionService:
                         pre_fallback_result
                     )
 
+            if defer_heavy_fallback_if_useful:
+                deferred_result = cls._defer_heavy_fallback(
+                    pre_fallback_result,
+                    reason="targeted_extraction_insufficient",
+                )
+                if deferred_result is not None:
+                    return deferred_result
+
             return cls._fallback_with_preservation(
                 pdf_path,
                 pre_fallback_result,
@@ -196,6 +208,14 @@ class PDFTextExtractionService:
             )
 
         except Exception as error:
+            if defer_heavy_fallback_if_useful:
+                deferred_result = cls._defer_heavy_fallback(
+                    pre_fallback_result,
+                    reason="selective_extraction_error",
+                )
+                if deferred_result is not None:
+                    return deferred_result
+
             return cls._fallback_with_preservation(
                 pdf_path,
                 pre_fallback_result,
@@ -661,10 +681,62 @@ class PDFTextExtractionService:
                 "has_useful_result": final_quality[
                     "has_useful_result"
                 ],
+                "heavy_fallback_deferred": False,
+                "heavy_fallback_defer_reason": "",
+                "result_completeness": cls._result_completeness(
+                    final_quality
+                ),
                 "general_fallback_error": fallback_result.get(
                     "error",
                     "",
                 ),
+            }
+        )
+        return final_result
+
+    @classmethod
+    def _defer_heavy_fallback(
+        cls,
+        pre_fallback_result,
+        reason,
+    ):
+        if pre_fallback_result is None:
+            return None
+
+        quality = cls._measure_text_quality(
+            pre_fallback_result.get("text", "")
+        )
+        if not quality["has_useful_result"]:
+            return None
+
+        final_result = dict(pre_fallback_result)
+        final_result.update(
+            {
+                "pre_fallback_coordinate_count": quality[
+                    "coordinate_count"
+                ],
+                "pre_fallback_polygon_count": quality[
+                    "polygon_count"
+                ],
+                "pre_fallback_table_count": quality[
+                    "table_count"
+                ],
+                "pre_fallback_has_required_polygons": quality[
+                    "has_required_polygons"
+                ],
+                "general_fallback_used": False,
+                "general_fallback_reason": reason,
+                "fallback_coordinate_count": None,
+                "fallback_polygon_count": None,
+                "fallback_table_count": None,
+                "final_result_source": "pre_fallback",
+                "has_useful_result": True,
+                "heavy_fallback_deferred": True,
+                "heavy_fallback_defer_reason": (
+                    "useful_pre_fallback_result"
+                ),
+                "result_completeness": "USEFUL_PARTIAL",
+                "general_fallback_error": "",
             }
         )
         return final_result
@@ -686,6 +758,11 @@ class PDFTextExtractionService:
                 "has_useful_result": quality[
                     "has_useful_result"
                 ],
+                "heavy_fallback_deferred": False,
+                "heavy_fallback_defer_reason": "",
+                "result_completeness": cls._result_completeness(
+                    quality
+                ),
             }
         )
         return final_result
@@ -744,6 +821,14 @@ class PDFTextExtractionService:
             quality["coordinate_count"],
             quality["table_count"],
         )
+
+    @staticmethod
+    def _result_completeness(quality):
+        if quality["has_required_polygons"]:
+            return "COMPLETE"
+        if quality["has_useful_result"]:
+            return "USEFUL_PARTIAL"
+        return "INSUFFICIENT"
 
     @classmethod
     def _decorate_result(cls, result, **metadata):
