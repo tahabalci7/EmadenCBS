@@ -1,4 +1,5 @@
 import html
+import math
 import xml.etree.ElementTree as ET
 
 
@@ -239,6 +240,15 @@ class KMLExporter:
                 type_polygons,
                 start=1,
             ):
+                coordinate_text = (
+                    cls._build_coordinate_text(
+                        polygon
+                    )
+                )
+
+                if not coordinate_text:
+                    continue
+
                 placemark = ET.SubElement(
                     folder,
                     cls._tag("Placemark"),
@@ -315,9 +325,7 @@ class KMLExporter:
                 )
 
                 coordinates_element.text = (
-                    cls._build_coordinate_text(
-                        polygon
-                    )
+                    coordinate_text
                 )
 
     @staticmethod
@@ -437,27 +445,26 @@ class KMLExporter:
     ):
         coordinate_lines = []
 
-        valid_points = []
-
-        for point in polygon.get(
+        points = polygon.get(
             "points",
             [],
-        ):
-            longitude = point.get(
-                "longitude"
-            )
-            latitude = point.get(
-                "latitude"
-            )
+        )
 
-            if longitude is None or latitude is None:
-                continue
+        transformed_points = (
+            cls._coordinate_pairs(
+                points,
+                "transformed_longitude",
+                "transformed_latitude",
+            )
+        )
 
-            valid_points.append(
-                (
-                    float(longitude),
-                    float(latitude),
-                )
+        if transformed_points is not None:
+            valid_points = transformed_points
+        else:
+            valid_points = cls._coordinate_pairs(
+                points,
+                "longitude",
+                "latitude",
             )
 
         if not valid_points:
@@ -488,6 +495,48 @@ class KMLExporter:
         return "\n".join(
             coordinate_lines
         )
+
+    @staticmethod
+    def _coordinate_pairs(
+        points,
+        longitude_field,
+        latitude_field,
+    ):
+        coordinate_pairs = []
+
+        for point in points:
+            longitude = point.get(
+                longitude_field
+            )
+            latitude = point.get(
+                latitude_field
+            )
+
+            if longitude in (None, "") or latitude in (
+                None,
+                "",
+            ):
+                return None
+
+            try:
+                coordinate_pair = (
+                    float(longitude),
+                    float(latitude),
+                )
+            except (TypeError, ValueError):
+                return None
+
+            if not all(
+                math.isfinite(value)
+                for value in coordinate_pair
+            ):
+                return None
+
+            coordinate_pairs.append(
+                coordinate_pair
+            )
+
+        return coordinate_pairs or None
 
     @classmethod
     def _project_description(
