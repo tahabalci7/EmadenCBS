@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from src.batch.heavy_refinement_queue import (
     COMPLETED,
@@ -11,6 +12,7 @@ from src.batch.heavy_refinement_queue import (
     PENDING,
     HeavyRefinementQueue,
     _queue_lock,
+    build_compact_geometry_snapshot,
 )
 
 
@@ -54,6 +56,59 @@ class HeavyRefinementQueueTests(unittest.TestCase):
         }
         result.update(overrides)
         return result
+
+    @staticmethod
+    def geometry_snapshot():
+        coordinates = [
+            {
+                "y": 500000.0,
+                "x": 4200000.0,
+                "table_type": "PROJE_ALANI",
+                "section": "Test",
+                "table_index": 1,
+                "polygon_group": "DEFAULT",
+                "projected_crs_epsg": 23036,
+                "crs_confidence": "HIGH",
+                "crs_conflict": False,
+            },
+            {
+                "y": 500100.0,
+                "x": 4200000.0,
+                "table_type": "PROJE_ALANI",
+                "section": "Test",
+                "table_index": 1,
+                "polygon_group": "DEFAULT",
+                "projected_crs_epsg": 23036,
+                "crs_confidence": "HIGH",
+                "crs_conflict": False,
+            },
+            {
+                "y": 500100.0,
+                "x": 4200100.0,
+                "table_type": "PROJE_ALANI",
+                "section": "Test",
+                "table_index": 1,
+                "polygon_group": "DEFAULT",
+                "projected_crs_epsg": 23036,
+                "crs_confidence": "HIGH",
+                "crs_conflict": False,
+            },
+        ]
+        polygon = {
+            "table_type": "PROJE_ALANI",
+            "section": "Test",
+            "table_index": 1,
+            "polygon_group": "DEFAULT",
+            "projected_crs_epsg": 23036,
+            "crs_confidence": "HIGH",
+            "crs_conflict": False,
+            "points": coordinates,
+            "point_count": 3,
+        }
+        return build_compact_geometry_snapshot(
+            coordinates,
+            [polygon],
+        )
 
     def enqueue(self, **overrides):
         return self.queue.enqueue_from_result(
@@ -135,6 +190,28 @@ class HeavyRefinementQueueTests(unittest.TestCase):
             [],
         )
 
+    def test_completion_persist_failure_leaves_durable_job_in_progress(self):
+        primary_geometry = self.geometry_snapshot()
+        job_id = self.enqueue(
+            geometry_snapshot=primary_geometry
+        )["job"]["job_id"]
+        self.queue.claim_next()
+        with mock.patch.object(
+            self.queue,
+            "_persist_state",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaises(OSError):
+                self.queue.complete_with_refined_result(
+                    job_id,
+                    {"summary": {}, "geometry": primary_geometry},
+                    {"classification": "SAME_GEOMETRY"},
+                )
+        stored = self.queue.get_job(job_id)
+        self.assertEqual(stored["status"], "IN_PROGRESS")
+        self.assertIsNone(stored["refined_result"])
+        self.assertNotIn("comparison", stored)
+
     def test_status_transitions_and_claim(self):
         job_id = self.enqueue()["job"]["job_id"]
         claimed = self.queue.claim_next()
@@ -147,6 +224,38 @@ class HeavyRefinementQueueTests(unittest.TestCase):
             reason="REFINEMENT_SAVED_SEPARATELY",
         )
         self.assertEqual(completed["status"], COMPLETED)
+
+    def test_complete_with_refined_result_is_atomic_and_status_safe(self):
+        primary_geometry = self.geometry_snapshot()
+        outcome = self.enqueue(
+            geometry_snapshot=primary_geometry
+        )
+        job_id = outcome["job"]["job_id"]
+        with self.assertRaises(ValueError):
+            self.queue.complete_with_refined_result(
+                job_id,
+                {"summary": {}, "geometry": primary_geometry},
+                {"classification": "SAME_GEOMETRY"},
+            )
+        primary_before = self.queue.get_job(job_id)["primary"]
+        manual_before = self.queue.get_job(job_id)["manual_review"]
+        self.queue.claim_next()
+        completed = self.queue.complete_with_refined_result(
+            job_id,
+            {"summary": {}, "geometry": primary_geometry},
+            {"classification": "SAME_GEOMETRY"},
+        )
+        self.assertEqual(completed["status"], COMPLETED)
+        self.assertEqual(completed["primary"], primary_before)
+        self.assertEqual(completed["manual_review"], manual_before)
+        self.assertEqual(
+            completed["comparison"]["classification"],
+            "SAME_GEOMETRY",
+        )
+        self.assertEqual(
+            list(self.root.glob("queue.json.tmp.*")),
+            [],
+        )
 
     def test_invalid_transition_does_not_change_state(self):
         job_id = self.enqueue()["job"]["job_id"]

@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+from src.batch.heavy_refinement_queue import (
+    build_compact_geometry_snapshot,
+)
 from src.core.pdf_text_extraction_service import (
     PDFTextExtractionService,
 )
@@ -107,6 +110,7 @@ class CEDBatchProcessor:
         pdf_path,
         project_type,
         defer_heavy_fallback_if_useful=False,
+        include_geometry_snapshot=False,
     ):
         result = {
             "pdf": str(pdf_path),
@@ -327,6 +331,22 @@ class CEDBatchProcessor:
             ] = len(
                 polygons
             )
+
+            if include_geometry_snapshot:
+                geometry_snapshot = (
+                    build_compact_geometry_snapshot(
+                        coordinates,
+                        polygons,
+                    )
+                )
+                result["geometry_snapshot"] = (
+                    geometry_snapshot
+                )
+                result[
+                    "transformed_coordinate_count"
+                ] = geometry_snapshot[
+                    "transformed_coordinate_count"
+                ]
 
             # -----------------------------
             # PROJE BİLGİLERİ
