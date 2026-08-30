@@ -74,6 +74,24 @@ class PolygonBuilder:
                     "projected_crs_name": item.get(
                         "projected_crs_name"
                     ),
+                    "crs_source": item.get(
+                        "crs_source",
+                        "UNRESOLVED",
+                    ),
+                    "crs_confidence": item.get(
+                        "crs_confidence",
+                        "UNRESOLVED",
+                    ),
+                    "crs_conflict": item.get(
+                        "crs_conflict",
+                        False,
+                    ),
+                    "crs_conflicting_epsg": list(
+                        item.get(
+                            "crs_conflicting_epsg",
+                            [],
+                        )
+                    ),
                     "points": [],
                 }
 
@@ -94,6 +112,40 @@ class PolygonBuilder:
                     "projected_crs_name": item.get(
                         "projected_crs_name"
                     ),
+                    "crs_source": item.get(
+                        "crs_source",
+                        "UNRESOLVED",
+                    ),
+                    "crs_confidence": item.get(
+                        "crs_confidence",
+                        "UNRESOLVED",
+                    ),
+                    "crs_conflict": item.get(
+                        "crs_conflict",
+                        False,
+                    ),
+                    "crs_conflicting_epsg": list(
+                        item.get(
+                            "crs_conflicting_epsg",
+                            [],
+                        )
+                    ),
+                    "crs_zone_candidates": list(
+                        item.get(
+                            "crs_zone_candidates",
+                            [],
+                        )
+                    ),
+                    "crs_datum_candidates": list(
+                        item.get(
+                            "crs_datum_candidates",
+                            [],
+                        )
+                    ),
+                    "crs_conflict_reason": item.get(
+                        "crs_conflict_reason",
+                        "",
+                    ),
                     "transformed_longitude": item.get(
                         "transformed_longitude"
                     ),
@@ -111,6 +163,10 @@ class PolygonBuilder:
 
             if len(points) < 3:
                 continue
+
+            cls._summarize_crs_metadata(
+                group
+            )
 
             geometry_key = cls._geometry_key(
                 points
@@ -152,6 +208,63 @@ class PolygonBuilder:
         )
 
         return polygons
+
+    @staticmethod
+    def _summarize_crs_metadata(group):
+        points = group.get("points", [])
+        resolved_epsg = sorted(
+            {
+                point.get("projected_crs_epsg")
+                for point in points
+                if isinstance(
+                    point.get("projected_crs_epsg"),
+                    int,
+                )
+            }
+        )
+        conflicting_epsg = sorted(
+            {
+                epsg
+                for point in points
+                for epsg in point.get(
+                    "crs_conflicting_epsg",
+                    [],
+                )
+                if isinstance(epsg, int)
+            }
+        )
+        has_cross_or_point_conflict = (
+            any(
+                point.get("crs_conflict") is True
+                for point in points
+            )
+            or len(resolved_epsg) > 1
+        )
+        confidences = {
+            point.get(
+                "crs_confidence",
+                "UNRESOLVED",
+            )
+            for point in points
+        }
+
+        group["crs_conflict"] = has_cross_or_point_conflict
+        group["crs_conflicting_epsg"] = (
+            conflicting_epsg
+            if conflicting_epsg
+            else resolved_epsg
+            if has_cross_or_point_conflict
+            else []
+        )
+        if (
+            "CONFLICTING" in confidences
+            or len(resolved_epsg) > 1
+        ):
+            group["crs_confidence"] = "CONFLICTING"
+        elif confidences == {"HIGH"}:
+            group["crs_confidence"] = "HIGH"
+        else:
+            group["crs_confidence"] = "UNRESOLVED"
 
     @classmethod
     def _remove_subset_polygons(

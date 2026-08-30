@@ -1,6 +1,7 @@
 import hashlib
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.crs_resolver import CRSResolver
@@ -95,11 +96,13 @@ class CoordinateEngine:
                 ],
             }
 
-            projected_crs = (
-                CRSResolver.resolve_projected_crs(
-                    crs_metadata
+            projected_crs = None
+            if datum_info["crs_confidence"] == "HIGH":
+                projected_crs = (
+                    CRSResolver.resolve_projected_crs(
+                        crs_metadata
+                    )
                 )
-            )
 
             transformed_coordinate_cache = {}
 
@@ -203,6 +206,10 @@ class CoordinateEngine:
                 ]
             ]
 
+        cls._mark_cross_observation_crs_conflicts(
+            results
+        )
+
         if pdf_path is not None:
             try:
                 TableAreaScopeResolver.apply_pdf(
@@ -278,6 +285,35 @@ class CoordinateEngine:
             "projection": datum_info[
                 "projection"
             ],
+            "crs_source": datum_info[
+                "crs_source"
+            ],
+            "crs_confidence": datum_info[
+                "crs_confidence"
+            ],
+            "crs_datum_candidates": list(
+                datum_info[
+                    "crs_datum_candidates"
+                ]
+            ),
+            "crs_zone_candidates": list(
+                datum_info[
+                    "crs_zone_candidates"
+                ]
+            ),
+            "crs_projection_candidates": list(
+                datum_info[
+                    "crs_projection_candidates"
+                ]
+            ),
+            "crs_conflict_reason": datum_info[
+                "crs_conflict_reason"
+            ],
+            "crs_conflict": (
+                datum_info["crs_confidence"]
+                == "CONFLICTING"
+            ),
+            "crs_conflicting_epsg": [],
 
             # ---------------------------------------------
             # NOKTA
@@ -375,6 +411,79 @@ class CoordinateEngine:
         ) = transformed
 
         return metadata
+
+    @classmethod
+    def _mark_cross_observation_crs_conflicts(
+        cls,
+        results,
+    ):
+        records_by_coordinate = {}
+
+        for result in results:
+            coordinate_key = (
+                cls._canonical_projected_number(
+                    result.get("y")
+                ),
+                cls._canonical_projected_number(
+                    result.get("x")
+                ),
+            )
+            epsg = result.get(
+                "projected_crs_epsg"
+            )
+            if (
+                None in coordinate_key
+                or not isinstance(epsg, int)
+            ):
+                continue
+            records_by_coordinate.setdefault(
+                coordinate_key,
+                [],
+            ).append(result)
+
+        for records in records_by_coordinate.values():
+            conflicting_epsg = sorted(
+                {
+                    record["projected_crs_epsg"]
+                    for record in records
+                }
+            )
+            if len(conflicting_epsg) < 2:
+                continue
+
+            for record in records:
+                record["crs_conflict"] = True
+                record["crs_conflicting_epsg"] = list(
+                    conflicting_epsg
+                )
+                reasons = {
+                    reason
+                    for reason in str(
+                        record.get(
+                            "crs_conflict_reason",
+                            "",
+                        )
+                    ).split("|")
+                    if reason
+                }
+                reasons.add(
+                    "CROSS_OBSERVATION_EPSG_CONFLICT"
+                )
+                record["crs_conflict_reason"] = (
+                    "|".join(sorted(reasons))
+                )
+
+    @staticmethod
+    def _canonical_projected_number(value):
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not number.is_finite():
+            return None
+        if number == 0:
+            return "0"
+        return format(number.normalize(), "f")
 
     @classmethod
     def _build_observation_identities(
