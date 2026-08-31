@@ -10,6 +10,12 @@ NUMERIC_LABEL_PATTERN = re.compile(
     r"^\d+$"
 )
 
+COMBINED_GEOGRAPHIC_PATTERN = re.compile(
+    r"^([+-]?\d+(?:[.,]\d+)?)"
+    r":"
+    r"([+-]?\d+(?:[.,]\d+)?)$"
+)
+
 
 def is_number(value: str) -> bool:
     try:
@@ -29,6 +35,20 @@ def to_float(value: str) -> float:
         value
         .replace(",", ".")
         .strip()
+    )
+
+
+def parse_combined_geographic(value: str):
+    match = COMBINED_GEOGRAPHIC_PATTERN.fullmatch(
+        value.strip()
+    )
+
+    if match is None:
+        return None
+
+    return (
+        to_float(match.group(1)),
+        to_float(match.group(2)),
     )
 
 
@@ -1175,6 +1195,30 @@ def parse_coordinate_blocks(
         block = lines[
             i:i + 5
         ]
+        block_line_count = 5
+
+        combined_block = lines[
+            i:i + 4
+        ]
+
+        if (
+            len(combined_block) == 4
+            and is_number(combined_block[1])
+            and is_number(combined_block[2])
+        ):
+            combined_geographic = (
+                parse_combined_geographic(
+                    combined_block[3]
+                )
+            )
+
+            if combined_geographic is not None:
+                block = [
+                    *combined_block[:3],
+                    str(combined_geographic[0]),
+                    str(combined_geographic[1]),
+                ]
+                block_line_count = 4
 
         if len(block) != 5:
             i += 1
@@ -1278,7 +1322,7 @@ def parse_coordinate_blocks(
                 point
             )
 
-        i += 5
+        i += block_line_count
 
     return results
 def detect_area_type(line):

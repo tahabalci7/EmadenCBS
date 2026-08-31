@@ -1,5 +1,7 @@
 import re
 
+from src.coordinate.state_machine import parse_coordinate_blocks
+
 
 class TableDetector:
     """
@@ -56,6 +58,11 @@ class TableDetector:
         r"-?\d+(?:[.,]\d+)?"
     )
 
+    PAGE_MARKER_PATTERN = re.compile(
+        r"^--- Sayfa (?P<page>\d+) "
+        r"\[[^\]\r\n]+\] ---$"
+    )
+
     @classmethod
     def find_tables(cls, text: str):
         lines = [
@@ -67,12 +74,59 @@ class TableDetector:
         tables = []
         current = []
         in_table = False
+        current_page_number = None
+        has_page_markers = any(
+            cls.PAGE_MARKER_PATTERN.fullmatch(
+                line
+            )
+            for line in lines
+        )
 
         index = 0
 
         while index < len(lines):
             line = lines[index]
             upper = line.upper()
+
+            page_marker = (
+                cls.PAGE_MARKER_PATTERN.fullmatch(
+                    line
+                )
+            )
+
+            if page_marker is not None:
+                page_number = int(
+                    page_marker.group("page")
+                )
+                page_lines = cls._page_body_lines(
+                    lines,
+                    index + 1,
+                )
+
+                continue_active_table = (
+                    in_table
+                    and current_page_number is not None
+                    and page_number
+                    == current_page_number + 1
+                    and cls._page_is_table_continuation(
+                        page_lines
+                    )
+                )
+
+                if in_table and not continue_active_table:
+                    cls._append_candidate(
+                        tables,
+                        current,
+                    )
+                    current = []
+                    in_table = False
+
+                if continue_active_table:
+                    current.append(line)
+
+                current_page_number = page_number
+                index += 1
+                continue
 
             # ---------------------------------------------
             # NUMARALI TABLO BAŞLIĞI
@@ -199,9 +253,12 @@ class TableDetector:
             # ---------------------------------------------
 
             if not in_table:
-                if cls._looks_like_continuation_start(
-                    lines,
-                    index,
+                if (
+                    not has_page_markers
+                    and cls._looks_like_continuation_start(
+                        lines,
+                        index,
+                    )
                 ):
                     current = [line]
                     in_table = True
@@ -232,6 +289,20 @@ class TableDetector:
                 in_table = False
 
                 # Aynı satırı dışarıda tekrar işle.
+                continue
+
+            if cls._looks_like_strong_section_start(
+                lines,
+                index,
+            ):
+                cls._append_candidate(
+                    tables,
+                    current,
+                )
+
+                current = []
+                in_table = False
+                index += 1
                 continue
 
             # ---------------------------------------------
@@ -412,6 +483,140 @@ class TableDetector:
             utm_y_count >= 2
             and utm_x_count >= 2
         )
+
+    @classmethod
+    def _page_body_lines(
+        cls,
+        lines,
+        start_index,
+    ):
+        page_lines = []
+
+        for line in lines[start_index:]:
+            if cls.PAGE_MARKER_PATTERN.fullmatch(
+                line
+            ):
+                break
+
+            page_lines.append(line)
+
+        return page_lines
+
+    @classmethod
+    def _page_is_table_continuation(
+        cls,
+        page_lines,
+    ):
+        if not page_lines:
+            return False
+
+        if cls._page_has_explicit_coordinate_table(
+            page_lines
+        ):
+            return False
+
+        section_index = None
+        for index in range(len(page_lines)):
+            if cls._looks_like_strong_section_start(
+                page_lines,
+                index,
+            ):
+                section_index = index
+                break
+
+        candidate_lines = (
+            page_lines[:section_index]
+            if section_index is not None
+            else page_lines
+        )
+
+        candidate_text = (
+            "KOORDINAT TABLOSU\n"
+            + "\n".join(candidate_lines)
+        )
+
+        return len(
+            parse_coordinate_blocks(
+                candidate_text
+            )
+        ) >= 2
+
+    @classmethod
+    def _page_has_explicit_coordinate_table(
+        cls,
+        page_lines,
+    ):
+        for index, line in enumerate(page_lines):
+            upper = line.upper()
+
+            if cls._looks_like_table_start(upper):
+                return True
+
+            if cls._looks_like_table_number(upper):
+                heading_lines = cls._collect_heading_lines(
+                    page_lines,
+                    index,
+                )
+                if cls._heading_is_coordinate_table(
+                    " ".join(heading_lines)
+                ):
+                    return True
+
+        return False
+
+    @classmethod
+    def _looks_like_strong_section_start(
+        cls,
+        lines,
+        index,
+    ):
+        line = lines[index].strip()
+        same_line = re.fullmatch(
+            r"\d+(?:\.\d+)+\.?\s+(.+)",
+            line,
+        )
+
+        if same_line is not None:
+            return cls._looks_like_section_title(
+                same_line.group(1)
+            )
+
+        if not re.fullmatch(
+            r"\d+(?:\.\d+)+\.?",
+            line,
+        ):
+            return False
+
+        if index + 1 >= len(lines):
+            return False
+
+        return cls._looks_like_section_title(
+            lines[index + 1]
+        )
+
+    @classmethod
+    def _looks_like_section_title(
+        cls,
+        value,
+    ):
+        clean = value.strip()
+
+        if len(clean) < 5:
+            return False
+
+        if not re.search(
+            r"[A-ZÇĞİÖŞÜ]{3}",
+            clean,
+            re.IGNORECASE,
+        ):
+            return False
+
+        if cls._looks_like_table_start(
+            clean.upper()
+        ):
+            return False
+
+        return True
 
     @classmethod
     def _looks_like_table_start(

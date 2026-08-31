@@ -748,6 +748,8 @@ class KMLExporter:
         if not name_parts:
             return "eMadenCBS Projesi"
 
+        return " - ".join(name_parts)
+
     @classmethod
     def _tag(
         cls,
