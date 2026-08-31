@@ -13,6 +13,7 @@ class PDFTextExtractionService:
     MAX_STRONG_TARGETS = 12
     STRONG_TARGET_SCORE = 70
     TARGET_NEIGHBORHOOD = range(-1, 4)
+    SELECTIVE_OCR_CHUNK_SIZE = 8
 
     PAGE_PATTERN = re.compile(
         r"--- Sayfa (\d+) \[PDF METİN KATMANI\] ---"
@@ -130,17 +131,40 @@ class PDFTextExtractionService:
                 fast_result.get("page_count", 0),
                 selected,
                 base_text=fast_result.get("text", ""),
+                defer_when_useful=(
+                    defer_heavy_fallback_if_useful
+                ),
+                stage="FAST_WINDOW",
             )
             pre_fallback_result = cls._build_selective_result(
                 fast_result,
                 selected,
                 strategy="selective_ocr_fast_window",
                 candidate_page_scores=fast_scores,
+                use_best=defer_heavy_fallback_if_useful,
             )
+
+            if selected["execution_error"]:
+                return cls._fallback_with_preservation(
+                    pdf_path,
+                    pre_fallback_result,
+                    reason="selective_extraction_error",
+                    candidate_page_scores=fast_scores,
+                    error=selected["execution_error"],
+                )
 
             if selected["has_required_polygons"]:
                 return cls._finalize_without_fallback(
                     pre_fallback_result
+                )
+
+            if (
+                defer_heavy_fallback_if_useful
+                and selected["has_useful_result"]
+            ):
+                return cls._defer_heavy_fallback(
+                    pre_fallback_result,
+                    reason="fast_window_usable",
                 )
 
             full_result = fast_result
@@ -169,6 +193,55 @@ class PDFTextExtractionService:
                         )
                     )
 
+                if defer_heavy_fallback_if_useful:
+                    pre_fallback_result = (
+                        cls._build_selective_result(
+                            full_result,
+                            selected,
+                            strategy=(
+                                "selective_ocr_full_discovery"
+                            ),
+                            candidate_page_scores=all_scores,
+                        )
+                    )
+                    full_quality = cls._record_selective_quality(
+                        selected,
+                        pre_fallback_result.get("text", ""),
+                    )
+                    selected["has_required_polygons"] = full_quality[
+                        "has_required_polygons"
+                    ]
+                    selected["has_useful_result"] = full_quality[
+                        "has_useful_result"
+                    ]
+
+                    if selected["has_required_polygons"]:
+                        return cls._finalize_without_fallback(
+                            pre_fallback_result
+                        )
+
+                    if selected["has_useful_result"]:
+                        cls._mark_selective_early_exit(
+                            selected,
+                            stage="FULL_TEXT_DISCOVERY",
+                            reason="usable_polygon_found",
+                        )
+                        pre_fallback_result = (
+                            cls._build_selective_result(
+                                full_result,
+                                selected,
+                                strategy=(
+                                    "selective_ocr_full_discovery"
+                                ),
+                                candidate_page_scores=all_scores,
+                                use_best=True,
+                            )
+                        )
+                        return cls._defer_heavy_fallback(
+                            pre_fallback_result,
+                            reason="full_text_discovery_usable",
+                        )
+
                 full_groups, full_scores = cls._target_groups(
                     full_result.get("text", "")
                 )
@@ -179,17 +252,40 @@ class PDFTextExtractionService:
                     full_result.get("page_count", 0),
                     selected,
                     base_text=full_result.get("text", ""),
+                    defer_when_useful=(
+                        defer_heavy_fallback_if_useful
+                    ),
+                    stage="FULL_DISCOVERY_OCR",
                 )
                 pre_fallback_result = cls._build_selective_result(
                     full_result,
                     selected,
                     strategy="selective_ocr_full_discovery",
                     candidate_page_scores=all_scores,
+                    use_best=defer_heavy_fallback_if_useful,
                 )
+
+                if selected["execution_error"]:
+                    return cls._fallback_with_preservation(
+                        pdf_path,
+                        pre_fallback_result,
+                        reason="selective_extraction_error",
+                        candidate_page_scores=all_scores,
+                        error=selected["execution_error"],
+                    )
 
                 if selected["has_required_polygons"]:
                     return cls._finalize_without_fallback(
                         pre_fallback_result
+                    )
+
+                if (
+                    defer_heavy_fallback_if_useful
+                    and selected["has_useful_result"]
+                ):
+                    return cls._defer_heavy_fallback(
+                        pre_fallback_result,
+                        reason="full_discovery_ocr_usable",
                     )
 
             if defer_heavy_fallback_if_useful:
@@ -457,13 +553,26 @@ class PDFTextExtractionService:
         page_count,
         selected,
         base_text="",
+        defer_when_useful=False,
+        stage="",
     ):
         selected_text = "\n".join(selected["parts"])
-        selected["has_required_polygons"] = (
-            cls._has_required_polygons(
-                base_text + "\n" + selected_text
+        candidate_text = base_text + "\n" + selected_text
+        if defer_when_useful:
+            quality = cls._record_selective_quality(
+                selected,
+                candidate_text,
             )
-        )
+            selected["has_required_polygons"] = quality[
+                "has_required_polygons"
+            ]
+            selected["has_useful_result"] = quality[
+                "has_useful_result"
+            ]
+        else:
+            selected["has_required_polygons"] = (
+                cls._has_required_polygons(candidate_text)
+            )
         if selected["has_required_polygons"]:
             return
 
@@ -481,33 +590,83 @@ class PDFTextExtractionService:
             if not group_pages:
                 continue
 
-            print("OCR SAYFALARI:", group_pages)
-            group_result = OCREngine.extract_selected_pages(
-                pdf_path,
-                group_pages,
-            )
-            selected["attempted_pages"].extend(group_pages)
-            selected["failed_pages"] += group_result.get(
-                "failed_pages",
-                0,
-            )
+            page_chunks = [group_pages]
+            if defer_when_useful:
+                page_chunks = [
+                    group_pages[
+                        start : start + cls.SELECTIVE_OCR_CHUNK_SIZE
+                    ]
+                    for start in range(
+                        0,
+                        len(group_pages),
+                        cls.SELECTIVE_OCR_CHUNK_SIZE,
+                    )
+                ]
 
-            group_text = group_result.get("text", "")
-            if not group_text.strip():
-                continue
+            for chunk_pages in page_chunks:
+                print("OCR SAYFALARI:", chunk_pages)
+                try:
+                    group_result = OCREngine.extract_selected_pages(
+                        pdf_path,
+                        chunk_pages,
+                    )
+                except Exception as error:
+                    if not defer_when_useful:
+                        raise
+                    selected["execution_error"] = str(error)
+                    return
 
-            selected["parts"].append(group_text)
-            selected["ocr_pages"].extend(
-                cls._page_numbers(group_text, "OCR")
-            )
-            selected_text = "\n".join(selected["parts"])
-            candidate_text = base_text + "\n" + selected_text
-            selected["has_required_polygons"] = (
-                cls._has_required_polygons(candidate_text)
-            )
+                selected["attempted_pages"].extend(chunk_pages)
+                selected["failed_pages"] += group_result.get(
+                    "failed_pages",
+                    0,
+                )
+                if defer_when_useful:
+                    selected["selective_ocr_chunks_processed"] += 1
+                    selected[
+                        "selective_ocr_processed_pages"
+                    ].extend(chunk_pages)
 
-            if selected["has_required_polygons"]:
-                break
+                group_text = group_result.get("text", "")
+                if group_text.strip():
+                    selected["parts"].append(group_text)
+                    selected["ocr_pages"].extend(
+                        cls._page_numbers(group_text, "OCR")
+                    )
+
+                selected_text = "\n".join(selected["parts"])
+                candidate_text = base_text + "\n" + selected_text
+                if defer_when_useful:
+                    quality = cls._record_selective_quality(
+                        selected,
+                        candidate_text,
+                    )
+                    selected["has_required_polygons"] = quality[
+                        "has_required_polygons"
+                    ]
+                    selected["has_useful_result"] = quality[
+                        "has_useful_result"
+                    ]
+                    if selected["has_required_polygons"]:
+                        cls._mark_selective_early_exit(
+                            selected,
+                            stage=stage,
+                            reason="complete_criterion_met",
+                        )
+                        return
+                    if selected["has_useful_result"]:
+                        cls._mark_selective_early_exit(
+                            selected,
+                            stage=stage,
+                            reason="usable_polygon_found",
+                        )
+                        return
+                else:
+                    selected["has_required_polygons"] = (
+                        cls._has_required_polygons(candidate_text)
+                    )
+                    if selected["has_required_polygons"]:
+                        return
 
     @staticmethod
     def _new_selected_result():
@@ -517,7 +676,58 @@ class PDFTextExtractionService:
             "ocr_pages": [],
             "failed_pages": 0,
             "has_required_polygons": False,
+            "has_useful_result": False,
+            "best_text": "",
+            "best_quality": None,
+            "best_ocr_pages": [],
+            "best_attempted_pages": [],
+            "best_failed_pages": 0,
+            "execution_error": "",
+            "selective_ocr_early_exit": False,
+            "selective_ocr_early_exit_stage": "",
+            "selective_ocr_early_exit_reason": "",
+            "selective_ocr_chunks_processed": 0,
+            "selective_ocr_processed_pages": [],
         }
+
+    @classmethod
+    def _record_selective_quality(cls, selected, text):
+        quality = cls._measure_text_quality(text)
+        best_quality = selected.get("best_quality")
+        should_replace = best_quality is None
+        if best_quality is not None:
+            if (
+                quality["has_required_polygons"]
+                and not best_quality["has_required_polygons"]
+            ):
+                should_replace = True
+            elif (
+                quality["has_required_polygons"]
+                == best_quality["has_required_polygons"]
+                and cls._quality_rank(quality)
+                >= cls._quality_rank(best_quality)
+            ):
+                should_replace = True
+
+        if should_replace:
+            selected["best_text"] = text
+            selected["best_quality"] = quality
+            selected["best_ocr_pages"] = list(
+                selected["ocr_pages"]
+            )
+            selected["best_attempted_pages"] = list(
+                selected["attempted_pages"]
+            )
+            selected["best_failed_pages"] = selected[
+                "failed_pages"
+            ]
+        return quality
+
+    @staticmethod
+    def _mark_selective_early_exit(selected, stage, reason):
+        selected["selective_ocr_early_exit"] = True
+        selected["selective_ocr_early_exit_stage"] = stage
+        selected["selective_ocr_early_exit_reason"] = reason
 
     @classmethod
     def _build_selective_result(
@@ -526,6 +736,7 @@ class PDFTextExtractionService:
         selected,
         strategy,
         candidate_page_scores,
+        use_best=False,
     ):
         selected_text = "\n".join(selected["parts"])
         final_text = (
@@ -533,6 +744,14 @@ class PDFTextExtractionService:
             + "\n"
             + selected_text
         )
+        ocr_pages = selected["ocr_pages"]
+        attempted_pages = selected["attempted_pages"]
+        failed_pages = selected["failed_pages"]
+        if use_best and selected.get("best_text"):
+            final_text = selected["best_text"]
+            ocr_pages = selected["best_ocr_pages"]
+            attempted_pages = selected["best_attempted_pages"]
+            failed_pages = selected["best_failed_pages"]
         return {
             "success": bool(final_text.strip()),
             "method": "PDF Metin Katmanı + Seçili Sayfa OCR",
@@ -546,16 +765,31 @@ class PDFTextExtractionService:
                 "text_layer_pages",
                 0,
             ),
-            "ocr_pages": len(set(selected["ocr_pages"])),
-            "failed_pages": selected["failed_pages"],
-            "ocr_page_numbers": sorted(set(selected["ocr_pages"])),
+            "ocr_pages": len(set(ocr_pages)),
+            "failed_pages": failed_pages,
+            "ocr_page_numbers": sorted(set(ocr_pages)),
             "ocr_attempted_page_numbers": sorted(
-                set(selected["attempted_pages"])
+                set(attempted_pages)
             ),
             "strategy": strategy,
             "candidate_page_scores": candidate_page_scores,
             "full_document_ocr": False,
             "error": "",
+            "selective_ocr_early_exit": selected[
+                "selective_ocr_early_exit"
+            ],
+            "selective_ocr_early_exit_stage": selected[
+                "selective_ocr_early_exit_stage"
+            ],
+            "selective_ocr_early_exit_reason": selected[
+                "selective_ocr_early_exit_reason"
+            ],
+            "selective_ocr_chunks_processed": selected[
+                "selective_ocr_chunks_processed"
+            ],
+            "selective_ocr_pages_processed": len(
+                set(selected["selective_ocr_processed_pages"])
+            ),
         }
 
     @classmethod
@@ -626,6 +860,19 @@ class PDFTextExtractionService:
             candidate_page_scores=candidate_page_scores,
             error=error,
         )
+        return cls._preserve_fallback_result(
+            pre_fallback_result,
+            fallback_result,
+            reason,
+        )
+
+    @classmethod
+    def _preserve_fallback_result(
+        cls,
+        pre_fallback_result,
+        fallback_result,
+        reason,
+    ):
         pre_quality = cls._measure_text_quality(
             (pre_fallback_result or {}).get("text", "")
         )

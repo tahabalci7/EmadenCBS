@@ -140,6 +140,11 @@ class CEDBatchProcessor:
             "fallback_coordinate_count": None,
             "fallback_polygon_count": None,
             "fallback_table_count": None,
+            "selective_ocr_early_exit": False,
+            "selective_ocr_early_exit_stage": "",
+            "selective_ocr_early_exit_reason": "",
+            "selective_ocr_chunks_processed": 0,
+            "selective_ocr_pages_processed": 0,
             "text_length": 0,
             "table_count": 0,
             "coordinate_count": 0,
@@ -238,6 +243,11 @@ class CEDBatchProcessor:
                 "fallback_coordinate_count",
                 "fallback_polygon_count",
                 "fallback_table_count",
+                "selective_ocr_early_exit",
+                "selective_ocr_early_exit_stage",
+                "selective_ocr_early_exit_reason",
+                "selective_ocr_chunks_processed",
+                "selective_ocr_pages_processed",
             ):
                 if diagnostic_field in ocr_result:
                     result[diagnostic_field] = ocr_result[
