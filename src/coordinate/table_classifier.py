@@ -130,6 +130,8 @@ class TableClassifier:
                 "ISLETME IZIN SAHASI",
                 "ISLETME IZNI ALANI",
                 "ISLETME IZNI SAHASI",
+                "URETIM IZIN ALANI",
+                "HAMMADDE URETIM IZIN",
             ],
         ):
             return "ISLETME_IZIN_ALANI"
@@ -177,6 +179,12 @@ class TableClassifier:
         ):
             return "PASA_ALANI"
 
+        if (
+            "PASA" in normalized
+            and "ALAN" in normalized
+        ):
+            return "PASA_ALANI"
+
         if cls._contains_any(
             normalized,
             [
@@ -186,6 +194,9 @@ class TableClassifier:
                 "MADEN STOK ALANI",
                 "URUN STOK ALANI",
             ],
+        ) or (
+            "STOK" in normalized
+            and "ALAN" in normalized
         ):
             return "STOK_ALANI"
 
@@ -210,6 +221,9 @@ class TableClassifier:
                 "URETIM ALANI",
                 "URETIM SAHASI",
             ],
+        ) or (
+            "OCAK" in normalized
+            and "ALAN" in normalized
         ):
             return "OCAK_ALANI"
 
@@ -328,7 +342,7 @@ class TableClassifier:
             normalized = cls._normalize(line)
 
             if re.match(
-                r"^TABLO\s*\d+",
+                r"^(?:TABLO|CIZELGE|TABLE)[-.\s]+\d+",
                 normalized,
             ):
                 heading_lines = [line]
@@ -375,8 +389,12 @@ class TableClassifier:
                 if index > 0:
                     previous = lines[index - 1]
 
-                    if not cls._looks_like_coordinate_data(
-                        cls._normalize(previous)
+                    if (
+                        not cls._looks_like_coordinate_data(
+                            cls._normalize(previous)
+                        )
+                        and len(previous.strip()) <= 80
+                        and previous.count(",") < 2
                     ):
                         return (
                             previous

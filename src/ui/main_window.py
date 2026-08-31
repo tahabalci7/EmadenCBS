@@ -184,7 +184,8 @@ class MainWindow(QMainWindow):
         step_start = time.perf_counter()
 
         ocr_result = PDFTextExtractionService.extract(
-            self.current_pdf
+            self.current_pdf,
+            defer_heavy_fallback_if_useful=True,
         )
 
         raw_text = ocr_result.get(

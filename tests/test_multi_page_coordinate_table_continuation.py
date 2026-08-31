@@ -201,8 +201,11 @@ class MultiPageCoordinateTableContinuationTests(unittest.TestCase):
 
         tables = TableDetector.find_tables(text)
 
-        self.assertEqual(len(tables), 1)
+        self.assertGreaterEqual(len(tables), 1)
         self.assertNotIn("R1", tables[0])
+        self.assertTrue(
+            any("R1" in table for table in tables[1:])
+        )
 
     def test_legacy_text_without_page_marker_is_preserved(self):
         text = "\n".join(
@@ -217,6 +220,64 @@ class MultiPageCoordinateTableContinuationTests(unittest.TestCase):
 
         self.assertEqual(len(tables), 1)
         self.assertIn("P1", tables[0])
+
+    def test_cizelge_and_boundary_headings_are_detected(self):
+        text = "\n".join(
+            [
+                page(
+                    1,
+                    "Çizelge 4. Ruhsat sahası sınır noktaları",
+                    *HEADER,
+                    *rows("R"),
+                ),
+                page(
+                    2,
+                    "Proje Alanı",
+                    "KOORDİNATLARI",
+                    *HEADER,
+                    *rows("P", 500),
+                ),
+            ]
+        )
+
+        tables = TableDetector.find_tables(text)
+
+        self.assertEqual(len(tables), 2)
+        self.assertIn("R1", tables[0])
+        self.assertIn("P1", tables[1])
+
+    def test_word_style_enlem_boylam_header_without_utm_word(self):
+        text = page(
+            1,
+            "Tablo 2. Mevcut ÇED alanı köşe noktaları",
+            "Nokta No",
+            "Y",
+            "X",
+            "Enlem",
+            "Boylam",
+            *rows("C"),
+        )
+
+        tables = TableDetector.find_tables(text)
+
+        self.assertEqual(len(tables), 1)
+        self.assertIn("C1", tables[0])
+
+    def test_sondaj_coordinate_window_is_not_taken_as_area_table(self):
+        text = page(
+            1,
+            "Sondaj Koordinatları",
+            "Datum : ED-50",
+            "Türü : UTM",
+            "Zon : 36",
+            "Enlem",
+            "Boylam",
+            *rows("S"),
+        )
+
+        tables = TableDetector.find_tables(text)
+
+        self.assertEqual(tables, [])
 
 
 if __name__ == "__main__":

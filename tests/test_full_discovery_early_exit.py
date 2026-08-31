@@ -439,6 +439,49 @@ class FullDiscoveryEarlyExitTests(unittest.TestCase):
         self.assertEqual(result["selective_ocr_chunks_processed"], 0)
         self.assertEqual(result["selective_ocr_pages_processed"], 0)
 
+    def test_dense_word_text_layer_does_not_skip_ocr(self):
+        dense_text = "WORD_TEXT_LAYER " * 1500
+        fast_result = self._text_layer_result(
+            dense_text,
+            page_count=80,
+            scanned_pages=80,
+        )
+        fallback_result = self._text_layer_result("")
+        with (
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text_layer",
+                return_value=fast_result,
+            ) as extract_text_layer,
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text",
+                return_value=fallback_result,
+            ) as extract_text,
+            patch.object(
+                PDFTextExtractionService,
+                "_target_groups",
+                return_value=([], {}),
+            ),
+            patch.object(
+                PDFTextExtractionService,
+                "_has_required_polygons",
+                return_value=False,
+            ),
+            patch.object(
+                PDFTextExtractionService,
+                "_measure_text_quality",
+                side_effect=self._quality_for_text,
+            ),
+        ):
+            result = PDFTextExtractionService.extract(
+                "sample.pdf",
+                defer_heavy_fallback_if_useful=False,
+            )
+
+        extract_text_layer.assert_called_once()
+        extract_text.assert_called()
+
     def test_all_insufficient_reaches_existing_general_fallback(self):
         fast_result = self._text_layer_result("FAST_BASE")
         fallback_result = self._text_layer_result("")
@@ -586,6 +629,52 @@ class FullDiscoveryEarlyExitTests(unittest.TestCase):
         )
         self.assertEqual(result["selective_ocr_chunks_processed"], 1)
         self.assertEqual(result["selective_ocr_pages_processed"], 5)
+
+    def test_index_guided_complete_skips_fast_scan(self):
+        index_text = self._text_layer_result("COMPLETE")
+        index_text["extracted_page_numbers"] = [40, 41, 42, 43, 44]
+        index_text["requested_page_numbers"] = [40, 41, 42, 43, 44]
+        with (
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "TableIndexLocator.plan",
+                return_value={
+                    "index_found": True,
+                    "index_pages": [8],
+                    "geometry_entries": [],
+                    "target_pages": [40, 41, 42, 43, 44],
+                    "page_count": 80,
+                },
+            ),
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text_layer_pages",
+                return_value=index_text,
+            ) as extract_pages,
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text_layer",
+            ) as extract_text_layer,
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_selected_pages",
+            ) as extract_selected,
+            patch.object(
+                PDFTextExtractionService,
+                "_measure_text_quality",
+                side_effect=self._quality_for_text,
+            ),
+        ):
+            result = PDFTextExtractionService.extract(
+                "sample.pdf",
+                defer_heavy_fallback_if_useful=True,
+            )
+
+        extract_pages.assert_called_once()
+        extract_text_layer.assert_not_called()
+        extract_selected.assert_not_called()
+        self.assertEqual(result["strategy"], "index_text_layer")
+        self.assertEqual(result["result_completeness"], "COMPLETE")
 
 
 if __name__ == "__main__":

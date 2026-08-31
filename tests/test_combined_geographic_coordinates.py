@@ -116,6 +116,55 @@ class CombinedGeographicCoordinateTests(unittest.TestCase):
         self.assertEqual(len(points), 1)
         self.assertEqual(points[0]["label"], "1")
 
+    def test_three_line_combined_utm_and_geographic(self):
+        points = parse_coordinate_blocks(
+            "\n".join(
+                [
+                    "KOORDINAT",
+                    "R1",
+                    "720000.000:4404500.000",
+                    "39.76037917:35.56786753",
+                ]
+            )
+        )
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["utm_y"], 720000.0)
+        self.assertEqual(points[0]["utm_x"], 4404500.0)
+        self.assertEqual(points[0]["latitude"], 39.76037917)
+        self.assertEqual(points[0]["longitude"], 35.56786753)
+
+    def test_three_line_combined_allows_spaces_around_colon(self):
+        points = parse_coordinate_blocks(
+            "\n".join(
+                [
+                    "KOORDINAT",
+                    "Ç1",
+                    "722988.000: 4403000.000",
+                    "39.74610125: 35.60220634",
+                ]
+            )
+        )
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["label"], "Ç1")
+        self.assertEqual(points[0]["utm_y"], 722988.0)
+
+    def test_longitude_before_latitude_is_reordered(self):
+        points = parse_coordinate_blocks(
+            "\n".join(
+                [
+                    "KOORDINAT",
+                    "R1",
+                    "322191",
+                    "4461000",
+                    "30.908088",
+                    "40.278989",
+                ]
+            )
+        )
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["latitude"], 40.278989)
+        self.assertEqual(points[0]["longitude"], 30.908088)
+
 
 if __name__ == "__main__":
     unittest.main()
