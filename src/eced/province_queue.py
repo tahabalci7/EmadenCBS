@@ -1,6 +1,8 @@
 import argparse
 import json
+import math
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -178,17 +180,62 @@ def save_state(state, state_path=STATE_PATH):
     os.replace(temp_path, state_path)
 
 
-def emit_event(event, province, **details):
-    payload = {
-        "event": event,
-        "province": province,
-        **details,
-    }
+def emit_event(event, province=None, **details):
+    payload = {"event": event}
+    if province is not None:
+        payload["province"] = province
+    payload.update(details)
     print(
         "ECED_EVENT "
         + json.dumps(payload, ensure_ascii=False),
         flush=True,
     )
+
+
+def _validate_min_free_gb(value):
+    try:
+        min_free_gb = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("min_free_gb sayısal olmalıdır") from exc
+
+    if not math.isfinite(min_free_gb) or min_free_gb < 0:
+        raise ValueError(
+            "min_free_gb sıfır veya pozitif, sonlu bir sayı olmalıdır"
+        )
+    return min_free_gb
+
+
+def _min_free_gb_argument(value):
+    try:
+        return _validate_min_free_gb(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _has_minimum_disk_space(download_root, min_free_gb):
+    min_free_gb = _validate_min_free_gb(min_free_gb)
+    root = Path(download_root) if download_root is not None else STATE_PATH.parent
+    usage_path = root
+
+    while not usage_path.exists() and usage_path.parent != usage_path:
+        usage_path = usage_path.parent
+
+    free_gb = shutil.disk_usage(usage_path).free / (1024 ** 3)
+    if free_gb >= min_free_gb:
+        return True
+
+    emit_event(
+        "low_disk_space",
+        free_gb=round(free_gb, 2),
+        required_free_gb=min_free_gb,
+        download_root=str(root),
+    )
+    print(
+        f"Yetersiz disk alanı: {free_gb:.2f} GB boş, "
+        f"en az {min_free_gb:g} GB gerekli.",
+        flush=True,
+    )
+    return False
 
 
 def _summary_error(summaries):
@@ -258,6 +305,7 @@ def run_queue(
     province=None,
     downloader=None,
     download_root=None,
+    min_free_gb=20,
 ):
     if province is not None and province not in PROVINCES:
         raise ValueError(f"Geçersiz il adı: {province}")
@@ -272,6 +320,9 @@ def run_queue(
     province_states = state.get("provinces")
     if not isinstance(province_states, dict):
         raise StateError("State dosyasında geçerli provinces alanı yok")
+
+    if not _has_minimum_disk_space(download_root, min_free_gb):
+        return state
 
     targets = (province,) if province is not None else PROVINCES
 
@@ -300,6 +351,9 @@ def run_queue(
             raise StateError(
                 f"{current_province} için geçersiz status: {status}"
             )
+
+        if not _has_minimum_disk_space(download_root, min_free_gb):
+            break
 
         _mark_in_progress(province_state)
         save_state(state, state_path)
@@ -369,6 +423,15 @@ def parse_args(argv=None):
         "--download-root",
         help="PDF arşivi ve queue state dosyası için kök klasör",
     )
+    parser.add_argument(
+        "--min-free-gb",
+        type=_min_free_gb_argument,
+        default=20,
+        help=(
+            "Yeni il başlamadan önce gerekli minimum boş alan "
+            "(GiB; 0 disk kontrolünü kapatır)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.province is not None and args.province not in PROVINCES:
@@ -385,6 +448,7 @@ def main(argv=None):
             retry_failed=args.retry_failed,
             province=args.province,
             download_root=args.download_root,
+            min_free_gb=args.min_free_gb,
         )
     except StateError as exc:
         raise SystemExit(str(exc)) from exc
