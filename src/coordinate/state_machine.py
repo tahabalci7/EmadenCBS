@@ -1,5 +1,7 @@
 import re
 
+from src.coordinate.table_classifier import TableClassifier
+
 
 LABEL_PATTERN = re.compile(
     r"^[A-ZÇĞİÖŞÜ0-9_.-]+$",
@@ -15,6 +17,13 @@ COMBINED_GEOGRAPHIC_PATTERN = re.compile(
     r"\s*:\s*"
     r"([+-]?\d+(?:[.,]\d+)?)$"
 )
+
+
+def is_ignorable_table_context_line(line) -> bool:
+    """Page markers, running headers, and CRS metadata are not headings."""
+    return TableClassifier._looks_like_context_noise_line(
+        line
+    )
 
 
 def is_number(value: str) -> bool:
@@ -1280,6 +1289,10 @@ def parse_coordinate_blocks(
         return None
 
     for line_index, line in enumerate(lines):
+        if is_ignorable_table_context_line(line):
+            pending_area_heading_lines.clear()
+            continue
+
         point = parse_row_coordinate(
             line,
             allow_numeric_labels,
@@ -1473,6 +1486,10 @@ def parse_coordinate_blocks(
 
     while i < len(lines):
         line = lines[i]
+
+        if is_ignorable_table_context_line(line):
+            i += 1
+            continue
 
         # Satırlar ilerlerken alan türünü güncelle (ikinci yöntem için).
         detected_area_type = detect_area_type(

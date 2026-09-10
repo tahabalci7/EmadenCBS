@@ -1,6 +1,7 @@
 import re
 
 from src.coordinate.state_machine import parse_coordinate_blocks
+from src.coordinate.table_classifier import TableClassifier
 
 
 class TableDetector:
@@ -112,6 +113,16 @@ class TableDetector:
     PAGE_MARKER_PATTERN = re.compile(
         r"^--- Sayfa (?P<page>\d+) "
         r"\[[^\]\r\n]+\] ---$"
+    )
+
+    # ÇED bölüm numaraları 1.3 / 1.3.1 gibi kısa tam sayılardır.
+    # 0.9996 (ölçek faktörü) veya 37.99035977 (enlem) bölüm değildir.
+    SECTION_NUMBER_PATTERN = re.compile(
+        r"^[1-9]\d?(?:\.\d{1,2})+\.?$"
+    )
+
+    SAME_LINE_SECTION_PATTERN = re.compile(
+        r"^([1-9]\d?(?:\.\d{1,2})+\.?)\s+(.+)$"
     )
 
     @classmethod
@@ -707,19 +718,17 @@ class TableDetector:
         index,
     ):
         line = lines[index].strip()
-        same_line = re.fullmatch(
-            r"\d+(?:\.\d+)+\.?\s+(.+)",
-            line,
+        same_line = cls.SAME_LINE_SECTION_PATTERN.fullmatch(
+            line
         )
 
         if same_line is not None:
             return cls._looks_like_section_title(
-                same_line.group(1)
+                same_line.group(2)
             )
 
-        if not re.fullmatch(
-            r"\d+(?:\.\d+)+\.?",
-            line,
+        if not cls.SECTION_NUMBER_PATTERN.fullmatch(
+            line
         ):
             return False
 
@@ -749,6 +758,11 @@ class TableDetector:
 
         if cls._looks_like_table_start(
             clean.upper(),
+        ):
+            return False
+
+        if TableClassifier._looks_like_context_noise_line(
+            clean
         ):
             return False
 

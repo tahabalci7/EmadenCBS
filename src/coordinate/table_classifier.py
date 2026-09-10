@@ -305,6 +305,39 @@ class TableClassifier:
 
         return "DIGER"
 
+    PAGE_MARKER_PATTERN = re.compile(
+        r"^--- Sayfa \d+ \[[^\]\r\n]+\] ---$"
+    )
+
+    NUMBERED_TABLE_CAPTION_PATTERN = re.compile(
+        r"^(?:TABLO|CIZELGE|TABLE)[-.\s]+\d+"
+    )
+
+    CRS_METADATA_LINE_PATTERN = re.compile(
+        r"^(?:"
+        r"KOORDINAT\s+SIRASI|"
+        r"KOOR\s+SIRASI|"
+        r"DATUM|"
+        r"TURU|"
+        r"PROJEKSIYON|"
+        r"D\s*O\s*M|"
+        r"ZON|"
+        r"OLCEK(?:\s+FAKTORU)?|"
+        r"PAFTA(?:\s+NO)?|"
+        r"ENLEM|"
+        r"BOYLAM|"
+        r"WGS\s*84|"
+        r"ED\s*50|"
+        r"UTM|"
+        r"SAGA(?:\s+YUKARI)?|"
+        r"YUKARI"
+        r")(?:\s|$)"
+    )
+
+    RUNNING_PAGE_HEADER_PATTERN = re.compile(
+        r"^(?:NIHAI\s+)?CED\s+RAPORU$"
+    )
+
     # ---------------------------------------------------------
     # TABLO BAŞLIĞINI BUL
     # ---------------------------------------------------------
@@ -337,13 +370,15 @@ class TableClassifier:
         # TABLO XX BAŞLIĞI
         # -----------------------------------------------------
 
-        for index, line in enumerate(lines[:15]):
+        for index, line in enumerate(lines[:20]):
+
+            if cls._looks_like_context_noise_line(line):
+                continue
 
             normalized = cls._normalize(line)
 
-            if re.match(
-                r"^(?:TABLO|CIZELGE|TABLE)[-.\s]+\d+",
-                normalized,
+            if cls.NUMBERED_TABLE_CAPTION_PATTERN.match(
+                normalized
             ):
                 heading_lines = [line]
 
@@ -351,13 +386,23 @@ class TableClassifier:
                 for next_line in lines[
                     index + 1:index + 4
                 ]:
+                    if cls._looks_like_context_noise_line(
+                        next_line
+                    ):
+                        break
+
                     next_normalized = cls._normalize(
                         next_line
                     )
 
                     # Veri satırına gelmişsek dur.
-                    if cls._looks_like_coordinate_data(
-                        next_normalized
+                    if (
+                        cls._looks_like_coordinate_data(
+                            next_normalized
+                        )
+                        or cls._looks_like_numeric_or_pair_line(
+                            next_line
+                        )
                     ):
                         break
 
@@ -378,39 +423,145 @@ class TableClassifier:
         # KOORDİNAT KELİMESİ İÇEREN BAŞLIK
         # -----------------------------------------------------
 
-        for index, line in enumerate(lines[:15]):
+        for index, line in enumerate(lines[:20]):
+
+            if cls._looks_like_context_noise_line(line):
+                continue
 
             normalized = cls._normalize(line)
 
-            if "KOORDINAT" in normalized:
+            if "KOORDINAT" not in normalized:
+                continue
 
-                # Başlığın bir önceki satıra bölünmüş olma
-                # ihtimalini de hesaba kat.
-                if index > 0:
-                    previous = lines[index - 1]
+            # Başlığın bir önceki satıra bölünmüş olma
+            # ihtimalini de hesaba kat.
+            if index > 0:
+                previous = lines[index - 1]
 
-                    if (
-                        not cls._looks_like_coordinate_data(
-                            cls._normalize(previous)
-                        )
-                        and len(previous.strip()) <= 80
-                        and previous.count(",") < 2
-                    ):
-                        return (
-                            previous
-                            + " "
-                            + line
-                        )
+                if (
+                    not cls._looks_like_context_noise_line(
+                        previous
+                    )
+                    and not cls._looks_like_coordinate_data(
+                        cls._normalize(previous)
+                    )
+                    and len(previous.strip()) <= 80
+                    and previous.count(",") < 2
+                ):
+                    return (
+                        previous
+                        + " "
+                        + line
+                    )
 
-                return line
+            return line
 
         # -----------------------------------------------------
         # SON ÇARE:
-        # İlk birkaç satır.
+        # İlk birkaç anlamlı satır. Tekrarlayan CRS
+        # metadata veya sayfa üst bilgisi başlık değildir.
         # -----------------------------------------------------
 
+        meaningful = []
+
+        for line in lines[:20]:
+            if cls._looks_like_context_noise_line(line):
+                continue
+
+            if (
+                cls._looks_like_coordinate_data(
+                    cls._normalize(line)
+                )
+                or cls._looks_like_numeric_or_pair_line(
+                    line
+                )
+            ):
+                break
+
+            if len(line.strip()) < 8:
+                continue
+
+            meaningful.append(line)
+
+            if len(meaningful) >= 3:
+                break
+
         return " ".join(
-            lines[:3]
+            meaningful
+        )
+
+    @classmethod
+    def _looks_like_context_noise_line(
+        cls,
+        line: str,
+    ) -> bool:
+        value = str(line).strip()
+
+        if not value or value == ":":
+            return True
+
+        if cls.PAGE_MARKER_PATTERN.fullmatch(value):
+            return True
+
+        if cls._looks_like_running_page_header(value):
+            return True
+
+        return cls._looks_like_crs_metadata_line(
+            value
+        )
+
+    @classmethod
+    def _looks_like_crs_metadata_line(
+        cls,
+        line: str,
+    ) -> bool:
+        normalized = cls._normalize(line)
+
+        if not normalized:
+            return False
+
+        return bool(
+            cls.CRS_METADATA_LINE_PATTERN.match(
+                normalized
+            )
+        )
+
+    @classmethod
+    def _looks_like_running_page_header(
+        cls,
+        line: str,
+    ) -> bool:
+        normalized = cls._normalize(line)
+
+        return bool(
+            cls.RUNNING_PAGE_HEADER_PATTERN.match(
+                normalized
+            )
+        )
+
+    @classmethod
+    def _has_numbered_table_caption(
+        cls,
+        table_text: str,
+    ) -> bool:
+        for line in table_text.splitlines()[:20]:
+            if cls._looks_like_context_noise_line(line):
+                continue
+
+            if cls.NUMBERED_TABLE_CAPTION_PATTERN.match(
+                cls._normalize(line)
+            ):
+                return True
+
+        return False
+
+    @classmethod
+    def _is_headerless_continuation(
+        cls,
+        table_text: str,
+    ) -> bool:
+        return not cls._has_numbered_table_caption(
+            table_text
         )
 
     # ---------------------------------------------------------
@@ -487,6 +638,30 @@ class TableClassifier:
     # ---------------------------------------------------------
     # KOORDİNAT VERİ SATIRI KONTROLÜ
     # ---------------------------------------------------------
+
+    @staticmethod
+    def _looks_like_numeric_or_pair_line(
+        line: str,
+    ) -> bool:
+        value = str(line).strip()
+
+        if not value:
+            return False
+
+        if re.fullmatch(
+            r"[+-]?\d+(?:[.,]\d+)?",
+            value,
+        ):
+            return True
+
+        return bool(
+            re.fullmatch(
+                r"[+-]?\d+(?:[.,]\d+)?"
+                r"\s*:\s*"
+                r"[+-]?\d+(?:[.,]\d+)?",
+                value,
+            )
+        )
 
     @staticmethod
     def _looks_like_coordinate_data(
