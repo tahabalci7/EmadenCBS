@@ -14,7 +14,11 @@ class DatumDetector:
         projection = "Bilinmiyor"
 
         datum_candidates = []
-        if "ED-50" in upper or "ED50" in upper:
+        if (
+            "ED-50" in upper
+            or "ED50" in upper
+            or re.search(r"\bED\s*50\b", upper)
+        ):
             utm_datum = "ED-50"
             datum_candidates.append("ED-50")
 
@@ -22,8 +26,16 @@ class DatumDetector:
             geographic_datum = "WGS-84"
 
         zone_matches = re.findall(
-            r"\bZON(?:E)?\s*[:\-]?\s*(35|36|37|38|39)\b",
+            r"\b(?:ZON(?:E)?|D[Iİ]L[Iİ]M(?:[Iİ])?)\s*[:\-]?\s*"
+            r"(35|36|37|38|39)\b",
             upper
+        )
+        zone_matches.extend(
+            re.findall(
+                r"\b(35|36|37|38|39)\s*[.]?\s*"
+                r"D[Iİ]L[Iİ]M(?:[Iİ])?\b",
+                upper
+            )
         )
         zone_candidates = list(dict.fromkeys(zone_matches))
 

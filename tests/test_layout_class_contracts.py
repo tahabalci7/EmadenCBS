@@ -23,6 +23,7 @@ from src.coordinate.pipeline_contract import (
     KML_NO_WGS84,
     KML_RING_STILL_CROSSED,
     NO_COORDINATE_TABLE,
+    POINTS_NO_POLYGON,
     collect_pipeline_diagnostics,
     inspect_kml_polygons,
     reason_codes,
@@ -233,6 +234,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "compact_degree_no_leftover_crossings",
             layout_class("ring_geometry")["capabilities"],
+        )
+        self.assertIn(
+            "nolu_vertex_is_not_polygon_group",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "ed50_space_and_dilim_zone_aliases",
+            layout_class("crs_inheritance")["capabilities"],
         )
 
     def test_extract_coordinates_still_returns_a_list(self):
@@ -449,6 +458,38 @@ class CrsInheritanceClassTests(unittest.TestCase):
         self.assertIn(CRS_INHERITED, pipeline["reason_codes"])
         self.assertNotIn(KML_NO_WGS84, pipeline["reason_codes"])
 
+    def test_ed50_space_and_dilim_outside_table_still_export(self):
+        text = "\n".join(
+            [
+                page(
+                    1,
+                    "Koordinat Sistemi",
+                    "Datum : ED 50",
+                    "Türü : UTM",
+                    "Dilim : 36",
+                    "6 Derece",
+                ),
+                page(
+                    2,
+                    "Tablo 2. Ruhsat Alanı Koordinatları",
+                    *stacked_utm_lines(
+                        ("N1", "N2", "N3", "N4"),
+                        square_utm(463000, 4014000),
+                    ),
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        self.assertGreaterEqual(len(pipeline["coordinates"]), 4)
+        self.assertGreaterEqual(len(pipeline["polygons"]), 1)
+        self.assertTrue(
+            any(
+                KMLExporter._build_coordinate_texts(polygon)
+                for polygon in pipeline["polygons"]
+            )
+        )
+        self.assertNotIn(KML_NO_WGS84, pipeline["reason_codes"])
+
 
 class RingGeometryClassTests(unittest.TestCase):
     def test_degree_scale_does_not_use_metre_collapse(self):
@@ -615,6 +656,57 @@ class GroupingTypingClassTests(unittest.TestCase):
         types = {polygon["table_type"] for polygon in polygons}
         self.assertIn("CED_ALANI", types)
         self.assertIn("RUHSAT_ALANI", types)
+
+    def test_nolu_nokta_vertices_are_one_ring_not_sub3_groups(self):
+        """Diagnose can parse ~6 UTM points while export is poly=0 if
+        each 'N NOLU NOKTA' line is treated as a polygon heading."""
+
+        vertex_lines = []
+        pairs = (
+            (463000, 4014000),
+            (463080, 4014000),
+            (463160, 4014000),
+            (463160, 4014080),
+            (463080, 4014080),
+            (463000, 4014080),
+        )
+        for index, (easting, northing) in enumerate(pairs, start=1):
+            vertex_lines.extend(
+                (
+                    f"{index} NOLU NOKTA",
+                    str(easting),
+                    str(northing),
+                )
+            )
+        text = page(
+            1,
+            "Tablo 1. Ruhsat Alanı Koordinatları",
+            *CRS,
+            *vertex_lines,
+        )
+        parsed = parse_coordinate_blocks(text)
+        self.assertGreaterEqual(len(parsed), 6)
+        self.assertFalse(
+            any(
+                str(point.get("polygon_group", "")).startswith("POLIGON_")
+                and "NOKTA" in str(point.get("polygon_group", ""))
+                for point in parsed
+            )
+        )
+        pipeline = run_coordinate_pipeline(text)
+        self.assertGreaterEqual(len(pipeline["coordinates"]), 6)
+        self.assertGreaterEqual(
+            len(pipeline["polygons"]),
+            1,
+            "parsed UTM points must become a polygon, not poly=0",
+        )
+        self.assertNotIn(POINTS_NO_POLYGON, pipeline["reason_codes"])
+        self.assertTrue(
+            any(
+                KMLExporter._build_coordinate_texts(polygon)
+                for polygon in pipeline["polygons"]
+            )
+        )
 
     def test_group_below_three_vertices_is_reported(self):
         coordinates = [
