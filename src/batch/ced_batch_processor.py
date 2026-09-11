@@ -8,6 +8,11 @@ from src.core.pdf_text_extraction_service import (
     PDFTextExtractionService,
 )
 from src.coordinate.coordinate_engine import CoordinateEngine
+from src.coordinate.pipeline_contract import (
+    collect_pipeline_diagnostics,
+    compact_diagnostics,
+    reason_codes,
+)
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.table_detector import TableDetector
 from src.coordinate.project_model import ProjectModel
@@ -342,6 +347,18 @@ class CEDBatchProcessor:
                 polygons
             )
 
+            pipeline_diagnostics = collect_pipeline_diagnostics(
+                tables,
+                coordinates,
+                polygons,
+            )
+            result["pipeline_reason_codes"] = reason_codes(
+                pipeline_diagnostics
+            )
+            result["pipeline_diagnostics"] = compact_diagnostics(
+                pipeline_diagnostics
+            )
+
             if include_geometry_snapshot:
                 geometry_snapshot = (
                     build_compact_geometry_snapshot(
@@ -394,6 +411,7 @@ class CEDBatchProcessor:
                 coordinates=coordinates,
                 polygons=polygons,
                 tables=tables,
+                diagnostics=pipeline_diagnostics,
             )
 
             project_model.set_project_info(
@@ -448,6 +466,12 @@ class CEDBatchProcessor:
                 f"  Polygon   : "
                 f"{result['polygon_count']}"
             )
+
+            if result.get("pipeline_reason_codes"):
+                print(
+                    f"  Teşhis    : "
+                    f"{', '.join(result['pipeline_reason_codes'])}"
+                )
 
             print(
                 f"  Durum     : "

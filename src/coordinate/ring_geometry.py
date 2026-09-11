@@ -21,10 +21,44 @@ the original vertices (it does not split). PolygonBuilder uses the plural API.
 MAX_UNCROSS_ITERATIONS = 64
 MAX_SPLIT_DEPTH = 64
 _AREA_EPSILON = 1e-6
+METRE_COLLAPSE_TOLERANCE = 0.01
+DEGREE_COLLAPSE_TOLERANCE = 1e-12
+GEOGRAPHIC_ABS_LIMIT = 180.0
 
 
-def collapse_consecutive_duplicates(points, tolerance=0.01):
+def inferred_ring_tolerance(points):
+    """Collapse tolerance from coordinate magnitude, not from a caller guess.
+
+    UTM easting/northing uses ~0.01 m. Lon/lat rings are degree-scale; a
+    metre-style 0.01 collapse is 0.01° and smashes small ÇED polygons.
+    """
+
+    if not points:
+        return METRE_COLLAPSE_TOLERANCE
+
+    max_abs = 0.0
+    for point in points:
+        max_abs = max(
+            max_abs,
+            abs(float(point["y"])),
+            abs(float(point["x"])),
+        )
+
+    if max_abs <= GEOGRAPHIC_ABS_LIMIT:
+        return DEGREE_COLLAPSE_TOLERANCE
+    return METRE_COLLAPSE_TOLERANCE
+
+
+def _resolved_tolerance(points, tolerance):
+    if tolerance is None:
+        return inferred_ring_tolerance(points)
+    return tolerance
+
+
+def collapse_consecutive_duplicates(points, tolerance=None):
     """Drop consecutive vertices that are the same location."""
+
+    tolerance = _resolved_tolerance(points, tolerance)
 
     if not points:
         return []
@@ -47,13 +81,15 @@ def collapse_consecutive_duplicates(points, tolerance=0.01):
     return cleaned
 
 
-def ring_is_simple(points, tolerance=0.01):
+def ring_is_simple(points, tolerance=None):
+    tolerance = _resolved_tolerance(points, tolerance)
     return not find_bowtie_edge_pair(
         collapse_consecutive_duplicates(points, tolerance)
     )
 
 
-def count_ring_crossings(points, tolerance=0.01):
+def count_ring_crossings(points, tolerance=None):
+    tolerance = _resolved_tolerance(points, tolerance)
     return len(
         find_all_bowtie_edge_pairs(
             collapse_consecutive_duplicates(points, tolerance)
@@ -112,7 +148,7 @@ def find_all_bowtie_edge_pairs(points):
     return pairs
 
 
-def repair_self_intersecting_ring(points, tolerance=0.01):
+def repair_self_intersecting_ring(points, tolerance=None):
     """
     Uncross by reversing vertex runs between crossing edges.
     Simple rings are unchanged. Multi-cross rings that stay
@@ -120,6 +156,7 @@ def repair_self_intersecting_ring(points, tolerance=0.01):
     ``repair_self_intersecting_rings`` to split them.
     """
 
+    tolerance = _resolved_tolerance(points, tolerance)
     was_closed = _ring_was_closed(points, tolerance)
     working = collapse_consecutive_duplicates(
         points,
@@ -145,7 +182,7 @@ def repair_self_intersecting_ring(points, tolerance=0.01):
     return _restore_closed(working, was_closed)
 
 
-def repair_self_intersecting_rings(points, tolerance=0.01):
+def repair_self_intersecting_rings(points, tolerance=None):
     """
     Return one or more simple rings.
 
@@ -157,6 +194,7 @@ def repair_self_intersecting_rings(points, tolerance=0.01):
     if not points:
         return []
 
+    tolerance = _resolved_tolerance(points, tolerance)
     was_closed = _ring_was_closed(points, tolerance)
     working = collapse_consecutive_duplicates(
         points,
