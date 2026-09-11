@@ -23,6 +23,7 @@ from src.coordinate.pipeline_contract import (
     KML_NO_WGS84,
     KML_RING_STILL_CROSSED,
     NO_COORDINATE_TABLE,
+    POINTS_NO_POLYGON,
     collect_pipeline_diagnostics,
     inspect_kml_polygons,
     reason_codes,
@@ -78,6 +79,33 @@ def stacked_utm_lines(labels, pairs):
     lines = []
     for label, (easting, northing) in zip(labels, pairs):
         lines.extend((label, str(easting), str(northing)))
+    return tuple(lines)
+
+
+YX_HEADERS = (
+    "Poligon No",
+    "Nokta No",
+    "Y(Sağa)",
+    "X(Yukarı)",
+)
+
+IS_AKIMI_PROSE = (
+    "1.4 İş Akımı",
+    "Ocak, tesis ve pasa sahalarının işletme süresi boyunca "
+    "nasıl kullanılacağı bu bölümde açıklanmıştır. Koordinat "
+    "değerleri sonraki tablolarda verilmeye devam eder.",
+    "Cevher hazırlama ve malzeme hareketi iş akım şeması "
+    "proje alanındaki faaliyetleri özetler.",
+)
+
+
+def cell_per_line_utm(poligon, pairs, start_no=1):
+    lines = []
+    for index, pair in enumerate(pairs, start=start_no):
+        easting, northing = pair
+        easting_text = easting if isinstance(easting, str) else str(easting)
+        northing_text = northing if isinstance(northing, str) else str(northing)
+        lines.extend((poligon, str(index), easting_text, northing_text))
     return tuple(lines)
 
 
@@ -234,6 +262,22 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             "compact_degree_no_leftover_crossings",
             layout_class("ring_geometry")["capabilities"],
         )
+        self.assertIn(
+            "prose_interleaved_utm_page_split",
+            layout_class("table_continuation")["capabilities"],
+        )
+        self.assertIn(
+            "y_saga_x_yukari_cell_per_line",
+            layout_class("coordinate_record_layouts")["capabilities"],
+        )
+        self.assertIn(
+            "named_roman_poligon_groups",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "late_document_utm_appendix",
+            layout_class("table_continuation")["capabilities"],
+        )
 
     def test_extract_coordinates_still_returns_a_list(self):
         result = CoordinateEngine.extract_coordinates("prose without tables")
@@ -274,6 +318,122 @@ class TableContinuationClassTests(unittest.TestCase):
         self.assertEqual(len(pipeline["coordinates"]), 4)
         self.assertEqual(len(pipeline["polygons"]), 1)
         self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+
+    def test_fragmented_utm_only_cell_per_line_tables_yield_polygons(self):
+        poligon_i = square_utm(463630, 4014904)
+        poligon_ii = square_utm(463900, 4015000)
+        tesis = square_utm(464200, 4015200)
+        pasa = (
+            ("464 500", 4015400),
+            (464600, 4015400),
+            (464600, 4015500),
+            (464500, 4015500),
+        )
+        text = "\n".join(
+            [
+                page(
+                    14,
+                    "Tablo-12. I. Poligon Proje (ÇED) Alanı Koordinatları",
+                    *CRS,
+                    *YX_HEADERS,
+                    *cell_per_line_utm("I", poligon_i),
+                ),
+                page(15, *IS_AKIMI_PROSE),
+                page(
+                    16,
+                    "Tablo-13. II. Poligon Proje (ÇED) Alanı Koordinatları",
+                    *YX_HEADERS,
+                    *cell_per_line_utm("II", poligon_ii[:2]),
+                ),
+                page(
+                    17,
+                    "Nihai PTD Raporu",
+                    *IS_AKIMI_PROSE,
+                    *cell_per_line_utm("II", poligon_ii[2:], start_no=3),
+                ),
+                page(
+                    18,
+                    "Yardımcı tesislerin açıklaması bu sayfada sürer. "
+                    "İş akımı paragrafları koordinat tablosu değildir.",
+                ),
+                page(
+                    19,
+                    "Tablo-17. Tesis Alanı Koordinatları",
+                    *YX_HEADERS,
+                    *cell_per_line_utm("T", tesis),
+                ),
+                page(
+                    20,
+                    "Tablo-18. Pasa Döküm Alanı Koordinatları",
+                    *YX_HEADERS,
+                    *cell_per_line_utm("P", pasa),
+                ),
+            ]
+        )
+
+        tables = TableDetector.find_tables(text)
+        ii_tables = [
+            table
+            for table in tables
+            if "Tablo-13" in table or "II. Poligon" in table
+        ]
+        self.assertEqual(len(ii_tables), 1, tables)
+        self.assertIn(str(poligon_ii[2][0]), ii_tables[0])
+        self.assertIn(str(poligon_ii[3][0]), ii_tables[0])
+
+        parsed = parse_coordinate_blocks(
+            "\n".join(
+                [
+                    "Tablo-12. I. Poligon Proje (ÇED) Alanı Koordinatları",
+                    *YX_HEADERS,
+                    *cell_per_line_utm("I", poligon_i),
+                ]
+            )
+        )
+        self.assertGreaterEqual(len(parsed), 4)
+        self.assertTrue(
+            any(
+                group == "POLIGON_I" or str(group).startswith("POLIGON_I_")
+                for group in (
+                    point.get("polygon_group") for point in parsed
+                )
+            )
+        )
+
+        pipeline = run_coordinate_pipeline(text, tables=tables)
+        self.assertGreater(len(pipeline["coordinates"]), 0)
+        self.assertGreater(
+            len(pipeline["polygons"]),
+            0,
+            pipeline["reason_codes"],
+        )
+        self.assertNotIn(POINTS_NO_POLYGON, pipeline["reason_codes"])
+        self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+
+        groups = {
+            point.get("polygon_group")
+            for point in pipeline["coordinates"]
+        }
+        self.assertTrue(
+            any(
+                group == "POLIGON_I" or str(group).startswith("POLIGON_I_")
+                for group in groups
+            ),
+            groups,
+        )
+        self.assertTrue(
+            any(
+                group == "POLIGON_II" or str(group).startswith("POLIGON_II_")
+                for group in groups
+            ),
+            groups,
+        )
+        self.assertTrue(
+            any(
+                KMLExporter._build_coordinate_texts(polygon)
+                for polygon in pipeline["polygons"]
+            )
+        )
 
 
 class CoordinateRecordLayoutClassTests(unittest.TestCase):
@@ -368,6 +528,17 @@ class CoordinateRecordLayoutClassTests(unittest.TestCase):
         self.assertEqual(len(pipeline["coordinates"]), 4)
         self.assertEqual(len(pipeline["polygons"]), 1)
         self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+
+        yx_cell_text = page(
+            1,
+            "Tablo-12. I. Poligon Proje (ÇED) Alanı Koordinatları",
+            *CRS,
+            *YX_HEADERS,
+            *cell_per_line_utm("I", square_utm(463630, 4014904)),
+        )
+        yx_pipeline = run_coordinate_pipeline(yx_cell_text)
+        self.assertGreaterEqual(len(yx_pipeline["coordinates"]), 4)
+        self.assertGreaterEqual(len(yx_pipeline["polygons"]), 1)
 
 
 class DetectorParserContractClassTests(unittest.TestCase):

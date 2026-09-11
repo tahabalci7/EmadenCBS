@@ -367,6 +367,15 @@ class TableDetector:
                 lines,
                 index,
             ):
+                rest_body = []
+                for rest_line in lines[index:]:
+                    if cls.PAGE_MARKER_PATTERN.fullmatch(rest_line):
+                        break
+                    rest_body.append(rest_line)
+                if cls._block_has_utm_pairs(rest_body):
+                    index += 1
+                    continue
+
                 cls._append_candidate(
                     tables,
                     current,
@@ -462,21 +471,36 @@ class TableDetector:
         return heading_lines
 
     @classmethod
-    def _block_has_utm_pairs(cls, lines):
+    def _count_utm_yx(cls, lines):
+        """Count compact UTM eastings/northings, including space-grouped lines."""
+
         utm_y_count = 0
         utm_x_count = 0
         for line in lines:
-            for number_text in cls.NUMBER_PATTERN.findall(line):
-                try:
-                    value = parse_localized_number(
-                        number_text
-                    )
-                except ValueError:
-                    continue
+            stripped = str(line).strip()
+            if not stripped:
+                continue
+            values = []
+            try:
+                values.append(parse_localized_number(stripped))
+            except ValueError:
+                for number_text in cls.NUMBER_PATTERN.findall(stripped):
+                    try:
+                        values.append(
+                            parse_localized_number(number_text)
+                        )
+                    except ValueError:
+                        continue
+            for value in values:
                 if 100000 <= value <= 999999:
                     utm_y_count += 1
                 elif 3000000 <= value <= 5000000:
                     utm_x_count += 1
+        return utm_y_count, utm_x_count
+
+    @classmethod
+    def _block_has_utm_pairs(cls, lines):
+        utm_y_count, utm_x_count = cls._count_utm_yx(lines)
         return utm_y_count >= 2 and utm_x_count >= 2
 
     @classmethod
@@ -537,57 +561,15 @@ class TableDetector:
         window_text = "\n".join(
             window
         )
-
         upper_text = window_text.upper()
-
-        structure_score = sum(
-            1
-            for keyword in cls.STRUCTURE_KEYWORDS
-            if keyword in upper_text
-        )
 
         if cls._window_looks_like_non_area_coordinates(
             upper_text
         ):
             return False
 
-        if structure_score < 2:
-            return False
-
-        utm_y_count = 0
-        utm_x_count = 0
-
-        for line in window:
-            numbers = cls.NUMBER_PATTERN.findall(
-                line
-            )
-
-            for number_text in numbers:
-                try:
-                    value = parse_localized_number(
-                        number_text
-                    )
-                except ValueError:
-                    continue
-
-                if (
-                    100000
-                    <= value
-                    <= 999999
-                ):
-                    utm_y_count += 1
-
-                elif (
-                    3000000
-                    <= value
-                    <= 5000000
-                ):
-                    utm_x_count += 1
-
-        return (
-            utm_y_count >= 2
-            and utm_x_count >= 2
-        )
+        utm_y_count, utm_x_count = cls._count_utm_yx(window)
+        return utm_y_count >= 2 and utm_x_count >= 2
 
     @classmethod
     def _page_body_lines(
@@ -652,26 +634,22 @@ class TableDetector:
         if heading_index is not None and not prefix_lines:
             return False
 
-        section_index = None
-        for index in range(len(prefix_lines)):
-            if cls._looks_like_strong_section_start(
-                prefix_lines,
-                index,
-            ):
-                section_index = index
-                break
+        prefix_text = "\n".join(prefix_lines)
+        if cls._window_looks_like_non_area_coordinates(
+            prefix_text.upper()
+        ):
+            return False
 
-        candidate_lines = (
-            prefix_lines[:section_index]
-            if section_index is not None
-            else prefix_lines
-        )
+        if cls._block_has_utm_pairs(prefix_lines):
+            return True
+
+        if cls._looks_like_continuation_start(prefix_lines, 0):
+            return True
 
         candidate_text = (
             "KOORDINAT TABLOSU\n"
-            + "\n".join(candidate_lines)
+            + prefix_text
         )
-
         return len(
             parse_coordinate_blocks(
                 candidate_text
@@ -962,41 +940,7 @@ class TableDetector:
             if keyword in upper_text
         )
 
-        utm_y_count = 0
-        utm_x_count = 0
-
-        # ---------------------------------------------
-        # UTM SAYILARINI SAY
-        # ---------------------------------------------
-
-        for line in lines:
-            numbers = cls.NUMBER_PATTERN.findall(
-                line
-            )
-
-            for number_text in numbers:
-                try:
-                    value = parse_localized_number(
-                        number_text
-                    )
-
-                except ValueError:
-                    continue
-
-                if (
-                    100000
-                    <= value
-                    <= 999999
-                ):
-                    utm_y_count += 1
-
-                elif (
-                    3000000
-                    <= value
-                    <= 5000000
-                ):
-                    utm_x_count += 1
-
+        utm_y_count, utm_x_count = cls._count_utm_yx(lines)
         has_utm_pairs = (
             utm_y_count >= 2
             and utm_x_count >= 2

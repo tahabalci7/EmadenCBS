@@ -2,11 +2,17 @@ import unittest
 
 from src.coordinate.table_index import (
     apply_printed_page_offset,
+    build_coordinate_page_plan,
     expand_pages,
+    extend_coordinate_chapter_pages,
     extract_index_entries,
+    extract_toc_geometry_entries,
     is_geometry_title,
+    looks_like_coordinate_fragment,
+    merge_extraction_pages,
     resolve_entry,
     split_entry,
+    split_toc_geometry_line,
     table_no_variants,
 )
 
@@ -93,6 +99,148 @@ class TableIndexTests(unittest.TestCase):
         self.assertEqual(
             expand_pages([41], 80),
             [40, 41, 42, 43, 44],
+        )
+
+    def test_coordinate_chapter_walks_past_one_prose_gap(self):
+        body_pages = {
+            14: "\n".join(
+                [
+                    "Tablo-12. I. Poligon Proje (ÇED) Alanı Koordinatları",
+                    "Y(Sağa)",
+                    "X(Yukarı)",
+                    "463630",
+                    "4014904",
+                    "463730",
+                    "4014904",
+                ]
+            ),
+            15: "1.4 İş Akımı\nUzun açıklama metni, koordinat hücresi yok.",
+            16: "\n".join(
+                [
+                    "Tablo-13. II. Poligon Proje (ÇED) Alanı Koordinatları",
+                    "Poligon No",
+                    "463900",
+                    "4015000",
+                    "464000",
+                    "4015100",
+                ]
+            ),
+            17: "\n".join(
+                [
+                    "Nihai PTD Raporu",
+                    "II",
+                    "3",
+                    "464100",
+                    "4015200",
+                    "II",
+                    "4",
+                    "464200",
+                    "4015300",
+                ]
+            ),
+            18: "Yalnız iş akımı paragrafı.",
+            19: "\n".join(
+                [
+                    "Tablo-17. Tesis Alanı Koordinatları",
+                    "464300",
+                    "4015400",
+                    "464400",
+                    "4015500",
+                ]
+            ),
+            20: "Sondaj Koordinatları\n463000\n4014000\n463100\n4014100",
+            21: "Başka bir UTM bloğu 465000 4016000 465100 4016100",
+        }
+        self.assertTrue(looks_like_coordinate_fragment(body_pages[14]))
+        self.assertFalse(looks_like_coordinate_fragment(body_pages[15]))
+        self.assertFalse(looks_like_coordinate_fragment(body_pages[20]))
+
+        expanded = expand_pages([14], 40)
+        self.assertEqual(expanded, [13, 14, 15, 16, 17])
+
+        walked = extend_coordinate_chapter_pages(
+            expanded,
+            body_pages,
+            40,
+        )
+        self.assertIn(16, walked)
+        self.assertIn(17, walked)
+        self.assertIn(19, walked)
+        self.assertNotIn(20, walked)
+        self.assertNotIn(21, walked)
+
+    def test_toc_geometry_line_reads_late_printed_page(self):
+        parsed = split_toc_geometry_line(
+            "2.3 Proje Alanı Koordinatları ......... 181"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["printed_page_raw"], "181")
+        self.assertIn("KOORDINAT", parsed["table_title"].upper())
+
+        entries = extract_toc_geometry_entries(
+            [
+                "İÇİNDEKİLER",
+                "1. Giriş ................................ 1",
+                "2.3 Proje Alanı Koordinatları ......... 181",
+                "3. Flora Listesi ...................... 200",
+                "Tablolar Dizini",
+            ],
+            1,
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["printed_page_raw"], "181")
+
+    def test_merge_extraction_pages_keeps_late_index_targets(self):
+        pages = merge_extraction_pages(
+            150,
+            [181, 182, 183, 184, 185],
+            559,
+        )
+        self.assertEqual(pages[0], 1)
+        self.assertEqual(pages[149], 150)
+        self.assertIn(181, pages)
+        self.assertIn(185, pages)
+        self.assertNotIn(186, pages)
+
+    def test_late_appendix_plan_without_table_index(self):
+        ruhsat = "\n".join(
+            [
+                "Ruhsat Alani Koordinatlari",
+                "Saga (Y)",
+                "Yukari (X)",
+                "R1",
+                "442400.000",
+                "4064825.000",
+                "R2",
+                "442500.000",
+                "4064825.000",
+                "R3",
+                "442500.000",
+                "4064925.000",
+                "R4",
+                "442400.000",
+                "4064925.000",
+            ]
+        )
+        index_pages = [
+            {
+                "physical_page": 1,
+                "text": "\n".join(
+                    [
+                        "ICINDEKILER",
+                        "1. Giris ................................ 1",
+                        "2.3 Proje Alani Koordinatlari ......... 181",
+                    ]
+                ),
+            }
+        ]
+        body_pages = {181: ruhsat, 182: ruhsat}
+        plan = build_coordinate_page_plan(index_pages, body_pages, 559)
+        self.assertTrue(plan["index_found"])
+        self.assertIn(181, plan["target_pages"])
+        self.assertIn(182, plan["late_coordinate_pages"])
+        self.assertTrue(
+            merge_extraction_pages(150, plan["target_pages"], 559)[-1] >= 181
         )
 
 

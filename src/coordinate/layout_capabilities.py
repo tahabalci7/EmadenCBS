@@ -18,15 +18,22 @@ LAYOUT_CLASSES = (
             "src.coordinate.table_detector",
             "src.coordinate.table_classifier",
             "src.coordinate.coordinate_engine",
+            "src.coordinate.table_index",
         ),
         "capabilities": (
             "headerless_multipage_continuation",
             "crs_decimal_is_not_section_number",
             "inherit_table_type_and_section",
+            "prose_interleaved_utm_page_split",
+            "late_document_utm_appendix",
         ),
         "contract": (
             "A headerless next page that continues UTM rows stays in the "
-            "same table. Scale factors and latitudes are not section numbers."
+            "same table. Scale factors and latitudes are not section numbers. "
+            "UTM-only Y(Sağa)/X(Yukarı) cell-per-line tables keep going across "
+            "page breaks and running headers/prose without a new full header. "
+            "Index/TOC/keyword planning merges late-document coordinate "
+            "chapters even when they sit beyond a first-N page budget."
         ),
     },
     {
@@ -42,11 +49,12 @@ LAYOUT_CLASSES = (
             "northing_easting_order",
             "unlabeled_pairs",
             "space_dot_comma_thousands",
+            "y_saga_x_yukari_cell_per_line",
         ),
         "contract": (
             "Accepted numeric tokens in Y+X, UTM-only, column-major, "
-            "swapped northing/easting, unlabeled, or grouped-thousands "
-            "forms become points."
+            "swapped northing/easting, unlabeled, grouped-thousands, or "
+            "cell-per-line Y(Sağa)/X(Yukarı) forms become points."
         ),
     },
     {
@@ -119,14 +127,16 @@ LAYOUT_CLASSES = (
         ),
         "capabilities": (
             "area_heading_nolu_poligons",
+            "named_roman_poligon_groups",
             "ced_vs_ruhsat_typing",
             "keep_distinct_types_on_shared_geometry",
             "report_groups_below_three_vertices",
         ),
         "contract": (
-            "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
-            "Groups with fewer than 3 vertices are reported, not silent. "
-            "Dedup must not erase RUHSAT when geometry matches ÇED."
+            "NOLU POLİGON / Tablo-N / N. Poligon / ÇED / ruhsat headings "
+            "type and group points. Groups with fewer than 3 vertices are "
+            "reported, not silent. Dedup must not erase RUHSAT when geometry "
+            "matches ÇED."
         ),
     },
     {

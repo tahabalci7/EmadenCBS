@@ -26,7 +26,7 @@ from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.project_model import ProjectModel
 from src.coordinate.ring_geometry import count_lonlat_crossings
 from src.coordinate.table_detector import TableDetector
-from src.coordinate.table_index import TableIndexLocator
+from src.coordinate.table_index import TableIndexLocator, merge_extraction_pages
 from src.export.kml_exporter import KMLExporter
 from src.ocr.ocr_engine import OCREngine
 from src.project.project_info_extractor import ProjectInfoExtractor
@@ -86,11 +86,23 @@ def extract_ocr_free(pdf_path, max_pages):
         extraction["index_target_pages"] = []
         return extraction
 
-    pages = set(range(1, min(max_pages, page_count) + 1))
-    pages.update(target_pages)
+    pages = merge_extraction_pages(
+        max_pages,
+        target_pages,
+        page_count,
+    )
+    if not pages:
+        extraction = OCREngine.extract_text_layer(
+            pdf_path,
+            max_pages=max_pages,
+        )
+        extraction["index_found"] = bool(plan.get("index_found"))
+        extraction["index_target_pages"] = target_pages
+        return extraction
+
     extraction = OCREngine.extract_text_layer_pages(
         pdf_path,
-        sorted(pages),
+        pages,
     )
     extraction["index_found"] = bool(plan.get("index_found"))
     extraction["index_target_pages"] = target_pages
@@ -177,7 +189,16 @@ def main():
     )
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=20260831)
-    parser.add_argument("--max-pages", type=int, default=150)
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=150,
+        help=(
+            "Prefix page budget for the fast window. Table-index, TOC, and "
+            "late-document coordinate appendix pages are always merged even "
+            "when they are beyond this limit."
+        ),
+    )
     parser.add_argument(
         "--exclude-summary",
         type=Path,

@@ -501,9 +501,15 @@ def _looks_like_column_header(line):
         "BOYLAM",
         "SAGA",
         "YUKARI",
+        "Y SAGA",
+        "X YUKARI",
+        "SAGA Y",
+        "YUKARI X",
         "NOKTA",
         "NOKTA NO",
         "NOKTA NO.",
+        "POLIGON NO",
+        "POLIGON NO.",
         "SR",
         "SIRA",
         "SIRA NO",
@@ -511,6 +517,17 @@ def _looks_like_column_header(line):
         "UTM",
         "DATUM",
     }:
+        return True
+
+    if normalized.startswith("Y ") and "SAGA" in normalized:
+        return True
+    if normalized.startswith("X ") and "YUKARI" in normalized:
+        return True
+    if normalized.startswith("SAGA") and re.search(r"\bY\b", normalized):
+        return True
+    if normalized.startswith("YUKARI") and re.search(r"\bX\b", normalized):
+        return True
+    if normalized.startswith("POLIGON NO"):
         return True
 
     return normalized.startswith("NOKTA")
@@ -1673,6 +1690,33 @@ def parse_coordinate_blocks(
                     group_name,
                     line.strip(),
                 )
+
+        titled = re.search(
+            r"(?:^|[\s.\-])([IVXLCDM]{1,6}|\d{1,2})\s*[.)]?\s+POLIGON\b(.*)$",
+            normalized,
+        )
+        if titled:
+            rest_text = titled.group(2).strip()
+            rest_head = re.sub(r"^[\s.:-]+", "", rest_text)
+            if re.match(r"^NO\b", rest_head) and not re.search(
+                r"\b(KOORDINAT|ALAN|SAHA)\b",
+                rest_head,
+            ):
+                return None
+
+            number = titled.group(1)
+            rest = re.sub(
+                r"[^A-Z0-9]+",
+                "_",
+                rest_text,
+            ).strip("_")[:32]
+            group_name = f"POLIGON_{number}"
+            if rest:
+                group_name = f"{group_name}_{rest}"
+            return (
+                group_name,
+                line.strip(),
+            )
 
         return None
 
