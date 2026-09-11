@@ -55,6 +55,14 @@ class CRSResolver:
             metadata.get("projection")
         )
 
+        if projection in {
+            "BILINMIYOR",
+            "UNRESOLVED",
+            "NONE",
+            "UNKNOWN",
+        }:
+            projection = ""
+
         if projection not in cls.UTM_PROJECTIONS:
             return None
 

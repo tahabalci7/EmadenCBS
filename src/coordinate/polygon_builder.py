@@ -168,7 +168,7 @@ class PolygonBuilder:
             )
 
             if not rings:
-                continue
+                rings = [group["points"]]
 
             for points in rings:
                 if len(points) < 3:
@@ -181,8 +181,14 @@ class PolygonBuilder:
                     ring_group
                 )
 
-                geometry_key = cls._geometry_key(
-                    points
+                geometry_key = (
+                    ring_group.get(
+                        "table_type",
+                        "DIGER",
+                    ),
+                    cls._geometry_key(
+                        points
+                    ),
                 )
 
                 if geometry_key in seen_geometries:
