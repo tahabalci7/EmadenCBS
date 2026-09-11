@@ -8,6 +8,7 @@ import math
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.layout_capabilities import (
@@ -751,13 +752,28 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
         )
         info = ProjectInfoExtractor().extract(text)
         self.assertEqual(info["license_no"], "42077")
+        self.assertEqual(info["ek_tip"], "Ek-1")
         self.assertIn("Örnek Madencilik", info["company"])
         self.assertFalse(info["company"].upper().startswith("PROJE"))
         name = ProjectInfoExtractor.build_project_export_name(info)
+        self.assertTrue(name.startswith("42077"))
         self.assertIn("42077", name)
-        self.assertNotIn("Bilinmiyor", name)
         self.assertNotIn("NUMARALI", name)
         self.assertNotIn("Nihai ÇED Raporu", name)
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                **info,
+                "province": "Ankara",
+            }
+        )
+        self.assertEqual(
+            Path(relative).parts[-2],
+            "Ek-1",
+        )
+        self.assertTrue(
+            Path(relative).name.startswith("42077 - ")
+        )
+        self.assertTrue(relative.endswith(".kml"))
 
 
 if __name__ == "__main__":

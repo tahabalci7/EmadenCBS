@@ -382,12 +382,24 @@ class CEDBatchProcessor:
             project_info = (
                 self.project_info_extractor
                 .extract(
-                    raw_text
+                    raw_text,
+                    source_path=str(pdf_path),
+                    project_type=project_type,
                 )
             )
 
             # e-ÇED klasör bilgisini de
-            # modele ekliyoruz.
+            # modele ekliyoruz. PDF'den okunan
+            # ek_tip varsa üzerine yazılmaz.
+            if not ProjectInfoExtractor._is_known_ek_tip(
+                project_info.get("ek_tip")
+            ):
+                project_info["ek_tip"] = (
+                    ProjectInfoExtractor.normalize_ek_tip(
+                        project_type
+                    )
+                )
+
             project_info[
                 "project_type"
             ] = project_type

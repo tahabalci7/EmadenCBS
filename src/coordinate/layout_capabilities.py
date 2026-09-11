@@ -145,10 +145,17 @@ LAYOUT_CLASSES = (
             "sicil_from_prose_or_label",
             "strip_company_label_junk",
             "usable_export_name_tokens_only",
+            "ek_tip_from_ced_or_ptd_title",
+            "export_path_il_ek_sicil_company",
         ),
         "contract": (
             "Sicil and company tokens come from general extractor rules. "
-            "Page headers and field labels are not export-name tokens."
+            "Page headers and field labels are not export-name tokens. "
+            "Ek-1 is ÇED Raporu / Nihai ÇED; Ek-2 is Proje Tanıtım "
+            "Dosyası / PTD. Export relative path is "
+            "{İL}/{Ek-1|Ek-2}/{sicil} - {firma}.kml. Missing il, Ek "
+            "tip, sicil, or firma stay visible as Bilinmiyor; the stem "
+            "always starts with sicil (or that placeholder)."
         ),
     },
 )

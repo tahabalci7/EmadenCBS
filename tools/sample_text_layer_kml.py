@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import re
 import sys
 import time
 from collections import Counter
@@ -52,12 +51,6 @@ def _count_crossed_kml_rings(polygons):
             if count_lonlat_crossings(pairs):
                 crossed += 1
     return crossed
-
-
-def safe_name(value):
-    text = re.sub(r'[<>:"/\\|?*]', "_", str(value or "proje"))
-    text = re.sub(r"\s+", "_", text).strip("._")
-    return text[:120] or "proje"
 
 
 def load_excluded_paths(summary_path):
@@ -122,7 +115,13 @@ def process_pdf(record, max_pages):
         tables=tables,
         diagnostics=pipeline_diagnostics,
     )
-    project.set_project_info(ProjectInfoExtractor().extract(text))
+    project.set_project_info(
+        ProjectInfoExtractor().extract(
+            text,
+            source_path=record.get("path"),
+            project_type=record.get("project_type"),
+        )
+    )
     type_counts = Counter(
         polygon.get("table_type", "DIGER")
         for polygon in polygons
@@ -146,6 +145,8 @@ def process_pdf(record, max_pages):
         "kml_crossed_rings": _count_crossed_kml_rings(polygons),
         "company": project.project_info.get("company"),
         "license_no": project.project_info.get("license_no"),
+        "ek_tip": project.project_info.get("ek_tip"),
+        "extracted_province": project.project_info.get("province"),
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "project": project,
     }
@@ -229,19 +230,12 @@ def main():
             )
             continue
         project = result.pop("project")
-        file_name = safe_name(
-            "_".join(
-                part
-                for part in (
-                    result.get("company") or "Proje",
-                    result.get("license_no") or "",
-                    Path(record["relative_path"]).stem,
-                )
-                if part
-            )
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            project.project_info
         )
-        kml_path = kml_dir / f"{file_name}.kml"
+        kml_path = kml_dir / relative
         if result["polygon_count"]:
+            kml_path.parent.mkdir(parents=True, exist_ok=True)
             KMLExporter.export(project, kml_path)
             result["kml_path"] = str(kml_path)
         else:
