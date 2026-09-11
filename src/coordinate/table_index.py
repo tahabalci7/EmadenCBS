@@ -7,6 +7,8 @@ import unicodedata
 
 import fitz
 
+from src.coordinate.state_machine import parse_localized_number
+
 
 INDEX_HEADING_CANONICAL = {
     "TABLOLAR DIZINI",
@@ -48,6 +50,26 @@ INDEX_STOP_RE = re.compile(
 INDEX_WINDOW_PAGES = 40
 CONTINUATION_BEFORE = 1
 CONTINUATION_AFTER = 3
+COORDINATE_CHAPTER_FORWARD = 20
+COORDINATE_CHAPTER_GAP = 1
+
+FRAGMENT_HEADING_HINTS = (
+    "KOORDINATLARI",
+    "KOORDINATLAR",
+    "Y SAGA",
+    "X YUKARI",
+    "POLIGON NO",
+    "NOKTA NO",
+)
+
+NON_AREA_FRAGMENT_HINTS = (
+    "SONDAJ",
+    "MODELLEME",
+    "BLOK MODEL",
+    "REZERV",
+    "TENOR",
+    "JEOLOJIK MODEL",
+)
 
 
 def normalize_tr(value):
@@ -314,6 +336,95 @@ def expand_pages(page_numbers, page_count):
     return sorted(expanded)
 
 
+def _count_utm_yx_in_text(text):
+    utm_y_count = 0
+    utm_x_count = 0
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        values = []
+        try:
+            values.append(parse_localized_number(stripped))
+        except ValueError:
+            for token in re.findall(r"[+-]?\d+(?:[.,]\d+)?", stripped):
+                try:
+                    values.append(parse_localized_number(token))
+                except ValueError:
+                    continue
+        for value in values:
+            if 100000 <= value <= 999999:
+                utm_y_count += 1
+            elif 3000000 <= value <= 5000000:
+                utm_x_count += 1
+    return utm_y_count, utm_x_count
+
+
+def looks_like_non_area_coordinates(text):
+    normalized = normalize_tr(text)
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in NON_AREA_FRAGMENT_HINTS)
+
+
+def looks_like_coordinate_fragment(text):
+    """Mid-document UTM/Y-X leftover pages, not only early index hits."""
+
+    if looks_like_non_area_coordinates(text):
+        return False
+
+    utm_y_count, utm_x_count = _count_utm_yx_in_text(text)
+    if utm_y_count >= 2 and utm_x_count >= 2:
+        return True
+
+    compact = re.sub(r"[^A-Z0-9]+", " ", normalize_tr(text))
+    compact = re.sub(r" +", " ", compact).strip()
+    heading = any(hint in compact for hint in FRAGMENT_HEADING_HINTS)
+    return heading and utm_y_count >= 1 and utm_x_count >= 1
+
+
+def extend_coordinate_chapter_pages(target_pages, body_pages, page_count):
+    """Walk forward from index hits across prose gaps and page-split tables."""
+
+    page_text = {}
+    if isinstance(body_pages, dict):
+        for key, value in body_pages.items():
+            try:
+                page_text[int(key)] = value or ""
+            except (TypeError, ValueError):
+                continue
+    else:
+        for page in body_pages or []:
+            physical_page = page.get("physical_page")
+            if isinstance(physical_page, int):
+                page_text[physical_page] = page.get("text") or ""
+
+    expanded = {
+        page_number
+        for page_number in (target_pages or [])
+        if isinstance(page_number, int) and page_number >= 1
+    }
+    limit = int(page_count or 0)
+    seeds = sorted(expanded)
+    for seed in seeds:
+        end = seed + COORDINATE_CHAPTER_FORWARD
+        if limit:
+            end = min(limit, end)
+        gap = 0
+        for page_number in range(seed + 1, end + 1):
+            text = page_text.get(page_number, "")
+            if looks_like_non_area_coordinates(text):
+                break
+            if looks_like_coordinate_fragment(text):
+                expanded.add(page_number)
+                gap = 0
+                continue
+            gap += 1
+            if gap > COORDINATE_CHAPTER_GAP:
+                break
+    return sorted(expanded)
+
+
 class TableIndexLocator:
     @classmethod
     def plan(cls, pdf_path):
@@ -400,10 +511,16 @@ class TableIndexLocator:
             for entry in resolved
             if entry.get("physical_page") is not None
         ]
+        target_pages = expand_pages(physical_pages, page_count)
+        target_pages = extend_coordinate_chapter_pages(
+            target_pages,
+            body_pages,
+            page_count,
+        )
         return {
             "index_found": bool(index_page_numbers),
             "index_pages": index_page_numbers,
             "geometry_entries": resolved,
-            "target_pages": expand_pages(physical_pages, page_count),
+            "target_pages": target_pages,
             "page_count": page_count,
         }

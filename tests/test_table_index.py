@@ -3,8 +3,10 @@ import unittest
 from src.coordinate.table_index import (
     apply_printed_page_offset,
     expand_pages,
+    extend_coordinate_chapter_pages,
     extract_index_entries,
     is_geometry_title,
+    looks_like_coordinate_fragment,
     resolve_entry,
     split_entry,
     table_no_variants,
@@ -94,6 +96,74 @@ class TableIndexTests(unittest.TestCase):
             expand_pages([41], 80),
             [40, 41, 42, 43, 44],
         )
+
+    def test_coordinate_chapter_walks_past_one_prose_gap(self):
+        body_pages = {
+            14: "\n".join(
+                [
+                    "Tablo-12. I. Poligon Proje (ÇED) Alanı Koordinatları",
+                    "Y(Sağa)",
+                    "X(Yukarı)",
+                    "463630",
+                    "4014904",
+                    "463730",
+                    "4014904",
+                ]
+            ),
+            15: "1.4 İş Akımı\nUzun açıklama metni, koordinat hücresi yok.",
+            16: "\n".join(
+                [
+                    "Tablo-13. II. Poligon Proje (ÇED) Alanı Koordinatları",
+                    "Poligon No",
+                    "463900",
+                    "4015000",
+                    "464000",
+                    "4015100",
+                ]
+            ),
+            17: "\n".join(
+                [
+                    "Nihai PTD Raporu",
+                    "II",
+                    "3",
+                    "464100",
+                    "4015200",
+                    "II",
+                    "4",
+                    "464200",
+                    "4015300",
+                ]
+            ),
+            18: "Yalnız iş akımı paragrafı.",
+            19: "\n".join(
+                [
+                    "Tablo-17. Tesis Alanı Koordinatları",
+                    "464300",
+                    "4015400",
+                    "464400",
+                    "4015500",
+                ]
+            ),
+            20: "Sondaj Koordinatları\n463000\n4014000\n463100\n4014100",
+            21: "Başka bir UTM bloğu 465000 4016000 465100 4016100",
+        }
+        self.assertTrue(looks_like_coordinate_fragment(body_pages[14]))
+        self.assertFalse(looks_like_coordinate_fragment(body_pages[15]))
+        self.assertFalse(looks_like_coordinate_fragment(body_pages[20]))
+
+        expanded = expand_pages([14], 40)
+        self.assertEqual(expanded, [13, 14, 15, 16, 17])
+
+        walked = extend_coordinate_chapter_pages(
+            expanded,
+            body_pages,
+            40,
+        )
+        self.assertIn(16, walked)
+        self.assertIn(17, walked)
+        self.assertIn(19, walked)
+        self.assertNotIn(20, walked)
+        self.assertNotIn(21, walked)
 
 
 if __name__ == "__main__":

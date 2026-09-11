@@ -279,6 +279,36 @@ class MultiPageCoordinateTableContinuationTests(unittest.TestCase):
 
         self.assertEqual(tables, [])
 
+    def test_utm_leftover_after_prose_stays_in_open_table(self):
+        leftover = (
+            "II",
+            "3",
+            "463900",
+            "4015000",
+            "II",
+            "4",
+            "464000",
+            "4015100",
+        )
+        text = "\n".join(
+            [
+                first_page(),
+                page(
+                    2,
+                    "Nihai PTD Raporu",
+                    "1.4 İş Akımı",
+                    "Ocak ve pasa sahalarının iş akımı bu sayfada anlatılır.",
+                    *leftover,
+                ),
+            ]
+        )
+
+        tables = TableDetector.find_tables(text)
+
+        self.assertEqual(len(tables), 1, tables)
+        self.assertIn("463900", tables[0])
+        self.assertIn("464000", tables[0])
+
 
 if __name__ == "__main__":
     unittest.main()
