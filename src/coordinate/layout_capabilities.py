@@ -23,10 +23,16 @@ LAYOUT_CLASSES = (
             "headerless_multipage_continuation",
             "crs_decimal_is_not_section_number",
             "inherit_table_type_and_section",
+            "late_caption_not_previous_continuation",
+            "split_area_heading_starts_table",
         ),
         "contract": (
             "A headerless next page that continues UTM rows stays in the "
-            "same table. Scale factors and latitudes are not section numbers."
+            "same table. Scale factors and latitudes are not section numbers. "
+            "Headerless UTM rows before a same-page caption of a different "
+            "area type are that caption's body (reading-order inversion), "
+            "not a continuation of the previous table. Split captions such "
+            "as Yeni ÇED / Alanı / Koordinatları start a new table."
         ),
     },
     {
@@ -125,13 +131,16 @@ LAYOUT_CLASSES = (
             "ced_vs_ruhsat_typing",
             "keep_distinct_types_on_shared_geometry",
             "report_groups_below_three_vertices",
+            "auxiliary_not_inherit_dominant_ring",
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
             "NOLU NOKTA / KÖŞE vertex labels stay in one ring; they are not "
             "polygon headings. Groups with fewer than 3 vertices are "
             "reported, not silent. Dedup must not erase RUHSAT when "
-            "geometry matches ÇED."
+            "geometry matches ÇED. An auxiliary ring (STOK/tesis/pasa) "
+            "must not inherit a ÇED-scale footprint from a misattached "
+            "or late-caption table."
         ),
     },
     {
