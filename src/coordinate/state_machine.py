@@ -1658,11 +1658,59 @@ def parse_coordinate_blocks(
             )
 
             if match:
+                rest_raw = match.group(2).strip()
+                rest_tokens = [
+                    token
+                    for token in re.sub(
+                        r"[^A-Z0-9]+",
+                        " ",
+                        rest_raw,
+                    ).split()
+                    if token
+                ]
+                has_vertex_rest = any(
+                    token in {"KOSE", "SINIR", "VERTEX"}
+                    or token.startswith("NOKTA")
+                    for token in rest_tokens
+                )
+                has_area_rest = any(
+                    token in {
+                        "POLIGON",
+                        "POLIGONU",
+                        "ALAN",
+                        "ALANI",
+                        "SAHA",
+                        "SAHASI",
+                        "TESIS",
+                        "TESISI",
+                        "OCAK",
+                        "PASA",
+                        "STOK",
+                        "DEPO",
+                        "HAVUZ",
+                        "GALERI",
+                        "BAND",
+                        "BANDI",
+                        "BACALARI",
+                        "RUHSAT",
+                        "CED",
+                        "PROJE",
+                    }
+                    or token.startswith("POLIGON")
+                    or token.startswith("ALAN")
+                    for token in rest_tokens
+                )
+                # "1 NOLU NOKTA" is a vertex label, not a polygon heading.
+                # Treating it as POLIGON_n splits a 6-point ring into six
+                # 1-vertex groups and export becomes poly=0.
+                if has_vertex_rest and not has_area_rest:
+                    return None
+
                 number = match.group(1)
                 rest = re.sub(
                     r"[^A-Z0-9]+",
                     "_",
-                    match.group(2),
+                    rest_raw,
                 ).strip("_")[:32]
 
                 group_name = f"POLIGON_{number}"

@@ -79,11 +79,13 @@ LAYOUT_CLASSES = (
             "document_level_high_crs",
             "previous_table_high_crs",
             "export_utm_without_table_local_zone",
+            "ed50_space_and_dilim_zone_aliases",
         ),
         "contract": (
             "Zone/datum may live outside the table slice. Document-level or "
             "prior-table HIGH CRS is used for WGS84. UTM points are not "
-            "dropped from KML only because the table-local Zon line is missing."
+            "dropped from KML only because the table-local Zon line is missing. "
+            "PTD/ÇED aliases ED 50 and Dilim 35–39 count as explicit CRS."
         ),
     },
     {
@@ -118,6 +120,7 @@ LAYOUT_CLASSES = (
             "src.coordinate.polygon_builder",
         ),
         "capabilities": (
+            "nolu_vertex_is_not_polygon_group",
             "area_heading_nolu_poligons",
             "ced_vs_ruhsat_typing",
             "keep_distinct_types_on_shared_geometry",
@@ -125,8 +128,10 @@ LAYOUT_CLASSES = (
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
-            "Groups with fewer than 3 vertices are reported, not silent. "
-            "Dedup must not erase RUHSAT when geometry matches ÇED."
+            "NOLU NOKTA / KÖŞE vertex labels stay in one ring; they are not "
+            "polygon headings. Groups with fewer than 3 vertices are "
+            "reported, not silent. Dedup must not erase RUHSAT when "
+            "geometry matches ÇED."
         ),
     },
     {

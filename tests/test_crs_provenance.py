@@ -35,10 +35,16 @@ class CRSProvenanceTests(unittest.TestCase):
         self.assertEqual(result["crs_zone_candidates"], ["35"])
         self.assertEqual(result["crs_conflict_reason"], "")
 
-    def test_single_explicit_ed50_zone_36_is_high(self):
-        result = DatumDetector.detect("ED50\nZONE: 36\nUTM")
-        self.assertEqual(result["crs_confidence"], "HIGH")
+    def test_ed50_space_and_dilim_are_high(self):
+        result = DatumDetector.detect("Datum : ED 50\nDilim : 36\nUTM")
+        self.assertEqual(result["utm_datum"], "ED-50")
         self.assertEqual(result["zone"], "36")
+        self.assertEqual(result["crs_confidence"], "HIGH")
+
+    def test_numbered_dilim_phrase_is_zone(self):
+        result = DatumDetector.detect("ED-50\n36. Dilim\n6 Derece")
+        self.assertEqual(result["zone"], "36")
+        self.assertEqual(result["crs_confidence"], "HIGH")
 
     def test_missing_zone_is_unresolved(self):
         result = DatumDetector.detect("ED-50\n6 Derece")

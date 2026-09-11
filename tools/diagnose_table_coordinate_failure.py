@@ -22,6 +22,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from src.coordinate.coordinate_engine import CoordinateEngine
+from src.coordinate.pipeline import run_coordinate_pipeline
 from src.coordinate.state_machine import (
     is_label,
     is_number,
@@ -381,6 +382,39 @@ def _page_summary(line_sources: list[dict]) -> str:
     return f"{pages[0]}-{pages[-1]} ({','.join(map(str, pages))})"
 
 
+def _print_pipeline_summary(text: str) -> None:
+    """Production path: parser points are not polygons until PolygonBuilder."""
+
+    pipeline = run_coordinate_pipeline(text)
+    coordinates = pipeline["coordinates"]
+    polygons = pipeline["polygons"]
+    grouped = {}
+    for item in coordinates:
+        key = (
+            item.get("table_type", "DIGER"),
+            item.get("polygon_group", "DEFAULT"),
+        )
+        grouped[key] = grouped.get(key, 0) + 1
+
+    print("\n" + "=" * 88)
+    print("PRODUCTION PIPELINE (extract + PolygonBuilder + KML contract)")
+    print(f"PIPELINE COORDINATE COUNT: {len(coordinates)}")
+    print(f"PIPELINE POLYGON COUNT: {len(polygons)}")
+    print(f"PIPELINE REASON CODES: {list(pipeline['reason_codes'])}")
+    print("PIPELINE GROUP SIZES:")
+    if grouped:
+        for (table_type, polygon_group), count in grouped.items():
+            print(
+                f"  {table_type} / {polygon_group}: {count} points"
+            )
+    else:
+        print("  []")
+    print(
+        "If parsed table points > 0 and PIPELINE POLYGON COUNT is 0, "
+        "this is a grouping/CRS/KML contract miss, not a silent parser miss."
+    )
+
+
 def _print_table(
     pdf_path: Path,
     table_index: int,
@@ -479,6 +513,7 @@ def diagnose_pdf(pdf_path: Path, preview_lines: int = 15) -> int:
             table_sources[table_index - 1],
             preview_lines,
         )
+    _print_pipeline_summary(text)
     return 0
 
 
@@ -499,6 +534,7 @@ def diagnose_pdf_pages(
         print(f"PDF page count: {page_count}")
         print(f"Pages actually inspected: {','.join(map(str, pages))}")
 
+        combined_pages = []
         for page_number in pages:
             print(f"\n=== PAGE {page_number} ===")
             page = document.load_page(page_number - 1)
@@ -513,6 +549,7 @@ def diagnose_pdf_pages(
             page_text = (
                 f"--- Sayfa {page_number} [PDF METİN KATMANI] ---\n{text}"
             )
+            combined_pages.append(page_text)
             tables = TableDetector.find_tables(page_text)
             table_sources = CoordinateEngine._match_table_line_sources(
                 page_text,
@@ -532,6 +569,9 @@ def diagnose_pdf_pages(
                     table_sources[table_index - 1],
                     preview_lines,
                 )
+
+        if combined_pages:
+            _print_pipeline_summary("\n".join(combined_pages))
 
     return 0
 

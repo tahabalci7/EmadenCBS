@@ -30,9 +30,9 @@ coordinates, polygons, and reason codes together.
 | Table continuation / Tip2 | `table_detector`, `table_classifier`, `coordinate_engine` | Headerless next-page rows stay in the same table. `0.9996` / latitudes are not section numbers. |
 | Coordinate record layouts | `state_machine` | Y+X+lat+lon, UTM-only, column-major, N/E order, unlabeled pairs, space/dot/comma thousands. |
 | Detector vs parser | `table_detector`, `state_machine`, `pipeline_contract` | Accepted table → points **or** `DETECTED_TABLE_NO_POINTS`. Never silent tables>0 / coords=0. |
-| CRS inheritance | `datum_detector`, `crs_resolver`, `coordinate_engine` | Document or prior-table HIGH CRS supplies WGS84 when the table slice has no Zon. |
+| CRS inheritance | `datum_detector`, `crs_resolver`, `coordinate_engine` | Document or prior-table HIGH CRS supplies WGS84 when the table slice has no Zon. `ED 50` and `Dilim 35–39` are explicit CRS aliases. |
 | Ring geometry | `ring_geometry`, `polygon_builder`, `kml_exporter` | Bow-tie uncross, multi-cross split, lon/lat repair independent of UTM, degree-scale collapse ≠ 0.01 m. Compact rings (span ≪ 0.01°) must not leave multi-cross leftovers in **exported KML text**. |
-| Grouping / typing | `table_classifier`, `state_machine`, `polygon_builder` | NOLU POLİGON / ÇED / ruhsat. `<3` verts reported. RUHSAT not erased when geometry matches ÇED. |
+| Grouping / typing | `table_classifier`, `state_machine`, `polygon_builder` | NOLU POLİGON / ÇED / ruhsat. **NOLU NOKTA / KÖŞE are vertex labels, not polygon headings** (otherwise diagnose points become poly=0). `<3` verts reported. RUHSAT not erased when geometry matches ÇED. |
 | Metadata / KML naming | `project_info_extractor`, `kml_exporter` | Sicil + usable company tokens; strip page-header / label junk. |
 
 ## Reason codes
@@ -58,6 +58,8 @@ Apply on this PR and later geometry work:
 
 Compact-degree leftover class (span ≪ 0.01°, ~95 vertices, a handful of crossings after lon/lat repair): `repair_lonlat_rings` must finish remainders (iterative split or last-resort hull). Exported KML coordinate text, including closed LinearRings, must have 0 crossings. `tools/scan_kml_geometry.py` is the file-scan contract Destekci uses.
 
+Parsed-points / poly=0 class: `diagnose_table_coordinate_failure.py` can report parsed UTM points while `process_pdf` / PolygonBuilder / KML is poly=0. Diagnose now also prints the production pipeline (coordinate count, polygon count, reason codes, group sizes). Typical causes: NOLU NOKTA vertex labels split into sub-3 groups; CRS as `ED 50` / `Dilim` outside the table slice. If a witness still cannot yield a ruhsat/ÇED ring after this general fix, open the PDF UI — do not add a filename allowlist.
+
 ## How to add a new layout class
 
 1. Add an entry to `LAYOUT_CLASSES` (id, modules, capabilities, contract).
@@ -77,5 +79,5 @@ python tools/scan_kml_geometry.py <out>/kml
 python tools/diagnose_table_coordinate_failure.py <pdf>
 ```
 
-Look at `pipeline_reason_codes`, `kml_crossed_rings`, and empty/crossed rings.
+Look at `pipeline_reason_codes`, `kml_crossed_rings`, empty/crossed rings, and diagnose `PIPELINE POLYGON COUNT` / group sizes.
 A class miss is a contract gap; do not patch the witness PDF’s name.
