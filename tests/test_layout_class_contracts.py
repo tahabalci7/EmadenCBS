@@ -274,6 +274,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             "named_roman_poligon_groups",
             layout_class("grouping_typing")["capabilities"],
         )
+        self.assertIn(
+            "late_document_utm_appendix",
+            layout_class("table_continuation")["capabilities"],
+        )
 
     def test_extract_coordinates_still_returns_a_list(self):
         result = CoordinateEngine.extract_coordinates("prose without tables")

@@ -46,18 +46,33 @@ INDEX_STOP_RE = re.compile(
     r"^(SEKILLER|SEKIL DIZINI|ICINDEKILER|"
     r"KISALTMALAR|KAYNAKLAR)\b"
 )
+TOC_HEADING_CANONICAL = {
+    "ICINDEKILER",
+    "ICINDEKILER TABLOSU",
+}
+TOC_STOP_RE = re.compile(
+    r"^(TABLOLAR DIZINI|TABLOLAR LISTESI|TABLO DIZINI|"
+    r"TABLO LISTESI|CIZELGELER DIZINI|CIZELGELER LISTESI|"
+    r"SEKILLER|SEKIL DIZINI|KISALTMALAR|KAYNAKLAR)\b"
+)
+TOC_SECTION_PREFIX_RE = re.compile(
+    r"^(?:(?:\d+(?:\.\d+)*)|[IVXLCDM]+)[\s.)-]+"
+)
 
 INDEX_WINDOW_PAGES = 40
 CONTINUATION_BEFORE = 1
 CONTINUATION_AFTER = 3
 COORDINATE_CHAPTER_FORWARD = 20
 COORDINATE_CHAPTER_GAP = 1
+LATE_CHAPTER_AFTER = 150
 
 FRAGMENT_HEADING_HINTS = (
     "KOORDINATLARI",
     "KOORDINATLAR",
     "Y SAGA",
     "X YUKARI",
+    "SAGA Y",
+    "YUKARI X",
     "POLIGON NO",
     "NOKTA NO",
 )
@@ -108,6 +123,18 @@ def is_index_heading(line):
     return any(
         normalized.startswith(heading + " ")
         for heading in INDEX_HEADING_CANONICAL
+    )
+
+
+def is_toc_heading(line):
+    normalized = normalize_tr(line)
+    if not normalized:
+        return False
+    if normalized in TOC_HEADING_CANONICAL:
+        return True
+    return any(
+        normalized.startswith(heading + " ")
+        for heading in TOC_HEADING_CANONICAL
     )
 
 
@@ -224,6 +251,56 @@ def extract_index_entries(page_lines, physical_page):
     return entries
 
 
+def split_toc_geometry_line(line):
+    normalized = normalize_tr(line)
+    page_match = PAGE_TAIL_RE.match(normalized)
+    if page_match is None:
+        return None
+
+    title = page_match.group("title").strip(" .-:")
+    title = TOC_SECTION_PREFIX_RE.sub("", title).strip(" .-:")
+    if not is_geometry_title(title):
+        return None
+
+    return {
+        "table_no": "",
+        "table_title": title,
+        "printed_page_raw": page_match.group("page"),
+        "raw_text": line.strip(),
+        "entry_source": "toc",
+    }
+
+
+def extract_toc_geometry_entries(page_lines, physical_page):
+    entries = []
+    in_toc = False
+
+    for line in page_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if is_toc_heading(stripped):
+            in_toc = True
+            continue
+
+        if not in_toc:
+            continue
+
+        normalized = normalize_tr(stripped)
+        if TOC_STOP_RE.match(normalized):
+            break
+
+        parsed = split_toc_geometry_line(stripped)
+        if parsed is None:
+            continue
+
+        parsed["physical_index_page"] = physical_page
+        entries.append(parsed)
+
+    return entries
+
+
 def resolve_entry(entry, pages, skip_pages=None):
     table_no = str(entry.get("table_no") or "").strip()
     title = normalize_tr(entry.get("table_title") or "")
@@ -318,6 +395,32 @@ def apply_printed_page_offset(entries):
         clone["physical_page"] = guessed
         clone["resolve_kind"] = "PRINTED_PAGE_OFFSET"
         clone["page_offset"] = median
+        updated.append(clone)
+    return updated
+
+
+def apply_printed_page_as_physical(entries, page_count):
+    """Use the printed TOC page when body title resolve cannot run."""
+
+    limit = int(page_count or 0)
+    updated = []
+    for entry in entries:
+        if entry.get("physical_page") is not None:
+            updated.append(entry)
+            continue
+        printed_first = entry.get("printed_page_first")
+        if printed_first is None:
+            updated.append(entry)
+            continue
+        if limit and printed_first > limit:
+            updated.append(entry)
+            continue
+        if printed_first < 1:
+            updated.append(entry)
+            continue
+        clone = dict(entry)
+        clone["physical_page"] = printed_first
+        clone["resolve_kind"] = "PRINTED_PAGE_AS_PHYSICAL"
         updated.append(clone)
     return updated
 
@@ -425,6 +528,137 @@ def extend_coordinate_chapter_pages(target_pages, body_pages, page_count):
     return sorted(expanded)
 
 
+def _page_text_map(body_pages):
+    page_text = {}
+    if isinstance(body_pages, dict):
+        for key, value in body_pages.items():
+            try:
+                page_text[int(key)] = value or ""
+            except (TypeError, ValueError):
+                continue
+        return page_text
+    for page in body_pages or []:
+        physical_page = page.get("physical_page")
+        if isinstance(physical_page, int):
+            page_text[physical_page] = page.get("text") or ""
+    return page_text
+
+
+def discover_late_coordinate_pages(body_pages, after_page=LATE_CHAPTER_AFTER):
+    """Find UTM/Y-X coordinate fragments after a first-N page budget."""
+
+    found = []
+    threshold = int(after_page or 0)
+    page_text = _page_text_map(body_pages)
+    for page_number in sorted(page_text):
+        if page_number <= threshold:
+            continue
+        if looks_like_coordinate_fragment(page_text[page_number]):
+            found.append(page_number)
+    return found
+
+
+def merge_extraction_pages(max_pages, target_pages, page_count):
+    """Prefix budget plus index/TOC/late-chapter pages.
+
+    ``max_pages`` is not a hard cap on coordinate appendix pages.
+    """
+
+    pages = set()
+    limit = int(page_count or 0)
+    prefix = int(max_pages or 0)
+    if prefix > 0:
+        end = prefix if not limit else min(prefix, limit)
+        pages.update(range(1, end + 1))
+    for page_number in target_pages or []:
+        if not isinstance(page_number, int) or page_number < 1:
+            continue
+        if limit and page_number > limit:
+            continue
+        pages.add(page_number)
+    return sorted(pages)
+
+
+def build_coordinate_page_plan(index_pages_data, body_pages, page_count):
+    """Plan extract pages from TOC / table index / late UTM fragments."""
+
+    index_page_numbers = []
+    table_entries = []
+    toc_entries = []
+    for page in index_pages_data or []:
+        lines = str(page.get("text") or "").splitlines()
+        physical_page = page.get("physical_page")
+        if not isinstance(physical_page, int):
+            continue
+        if any(is_index_heading(line) for line in lines):
+            index_page_numbers.append(physical_page)
+        table_entries.extend(
+            extract_index_entries(lines, physical_page)
+        )
+        toc_entries.extend(
+            extract_toc_geometry_entries(lines, physical_page)
+        )
+
+    geometry_entries = [
+        entry
+        for entry in table_entries
+        if is_geometry_title(entry.get("table_title", ""))
+    ]
+    geometry_entries.extend(toc_entries)
+
+    body_list = body_pages
+    if isinstance(body_pages, dict):
+        body_list = [
+            {
+                "physical_page": page_number,
+                "text": text,
+            }
+            for page_number, text in sorted(
+                _page_text_map(body_pages).items()
+            )
+        ]
+
+    resolved = []
+    if geometry_entries:
+        resolved = [
+            resolve_entry(
+                entry,
+                body_list or [],
+                skip_pages=index_page_numbers,
+            )
+            for entry in geometry_entries
+        ]
+        resolved = apply_printed_page_offset(resolved)
+        resolved = apply_printed_page_as_physical(resolved, page_count)
+
+    physical_pages = [
+        entry["physical_page"]
+        for entry in resolved
+        if entry.get("physical_page") is not None
+    ]
+    late_pages = discover_late_coordinate_pages(
+        body_pages,
+        LATE_CHAPTER_AFTER,
+    )
+    target_pages = expand_pages(
+        physical_pages + late_pages,
+        page_count,
+    )
+    target_pages = extend_coordinate_chapter_pages(
+        target_pages,
+        body_pages,
+        page_count,
+    )
+    return {
+        "index_found": bool(index_page_numbers) or bool(toc_entries),
+        "index_pages": index_page_numbers,
+        "geometry_entries": resolved or geometry_entries,
+        "target_pages": target_pages,
+        "page_count": int(page_count or 0),
+        "late_coordinate_pages": late_pages,
+    }
+
+
 class TableIndexLocator:
     @classmethod
     def plan(cls, pdf_path):
@@ -434,6 +668,7 @@ class TableIndexLocator:
             "geometry_entries": [],
             "target_pages": [],
             "page_count": 0,
+            "late_coordinate_pages": [],
         }
         try:
             document = fitz.open(pdf_path)
@@ -456,34 +691,27 @@ class TableIndexLocator:
                     }
                 )
 
-            index_page_numbers = []
-            entries = []
-            for page in index_pages_data:
-                lines = page["text"].splitlines()
-                if any(is_index_heading(line) for line in lines):
-                    index_page_numbers.append(page["physical_page"])
-                entries.extend(
-                    extract_index_entries(
-                        lines,
-                        page["physical_page"],
-                    )
-                )
-
-            geometry_entries = [
-                entry
-                for entry in entries
-                if is_geometry_title(entry.get("table_title", ""))
-            ]
-            if not geometry_entries:
+            preview = build_coordinate_page_plan(
+                index_pages_data,
+                [],
+                page_count,
+            )
+            has_geometry = bool(preview.get("geometry_entries"))
+            late_needed = page_count > LATE_CHAPTER_AFTER
+            if not has_geometry and not late_needed:
                 return {
                     **empty,
-                    "index_found": bool(index_page_numbers),
-                    "index_pages": index_page_numbers,
+                    "index_found": bool(preview.get("index_found")),
+                    "index_pages": preview.get("index_pages") or [],
                     "page_count": page_count,
                 }
 
+            start_index = 0
+            if not has_geometry:
+                start_index = LATE_CHAPTER_AFTER
+
             body_pages = []
-            for index in range(page_count):
+            for index in range(start_index, page_count):
                 try:
                     text = document[index].get_text("text") or ""
                 except Exception:
@@ -497,30 +725,8 @@ class TableIndexLocator:
         finally:
             document.close()
 
-        resolved = [
-            resolve_entry(
-                entry,
-                body_pages,
-                skip_pages=index_page_numbers,
-            )
-            for entry in geometry_entries
-        ]
-        resolved = apply_printed_page_offset(resolved)
-        physical_pages = [
-            entry["physical_page"]
-            for entry in resolved
-            if entry.get("physical_page") is not None
-        ]
-        target_pages = expand_pages(physical_pages, page_count)
-        target_pages = extend_coordinate_chapter_pages(
-            target_pages,
+        return build_coordinate_page_plan(
+            index_pages_data,
             body_pages,
             page_count,
         )
-        return {
-            "index_found": bool(index_page_numbers),
-            "index_pages": index_page_numbers,
-            "geometry_entries": resolved,
-            "target_pages": target_pages,
-            "page_count": page_count,
-        }

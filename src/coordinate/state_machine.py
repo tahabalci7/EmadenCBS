@@ -503,6 +503,8 @@ def _looks_like_column_header(line):
         "YUKARI",
         "Y SAGA",
         "X YUKARI",
+        "SAGA Y",
+        "YUKARI X",
         "NOKTA",
         "NOKTA NO",
         "NOKTA NO.",
@@ -520,6 +522,10 @@ def _looks_like_column_header(line):
     if normalized.startswith("Y ") and "SAGA" in normalized:
         return True
     if normalized.startswith("X ") and "YUKARI" in normalized:
+        return True
+    if normalized.startswith("SAGA") and re.search(r"\bY\b", normalized):
+        return True
+    if normalized.startswith("YUKARI") and re.search(r"\bX\b", normalized):
         return True
     if normalized.startswith("POLIGON NO"):
         return True

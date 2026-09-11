@@ -25,12 +25,15 @@ LAYOUT_CLASSES = (
             "crs_decimal_is_not_section_number",
             "inherit_table_type_and_section",
             "prose_interleaved_utm_page_split",
+            "late_document_utm_appendix",
         ),
         "contract": (
             "A headerless next page that continues UTM rows stays in the "
             "same table. Scale factors and latitudes are not section numbers. "
             "UTM-only Y(Sağa)/X(Yukarı) cell-per-line tables keep going across "
-            "page breaks and running headers/prose without a new full header."
+            "page breaks and running headers/prose without a new full header. "
+            "Index/TOC/keyword planning merges late-document coordinate "
+            "chapters even when they sit beyond a first-N page budget."
         ),
     },
     {
