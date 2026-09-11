@@ -2,6 +2,10 @@ import html
 import math
 import xml.etree.ElementTree as ET
 
+from src.coordinate.ring_geometry import (
+    repair_lonlat_rings,
+)
+
 
 class KMLExporter:
 
@@ -236,97 +240,99 @@ class KMLExporter:
             # AYNI TÜRDEKİ ALT POLİGONLAR
             # ---------------------------------------------
 
-            for polygon_index, polygon in enumerate(
-                type_polygons,
-                start=1,
-            ):
-                coordinate_text = (
-                    cls._build_coordinate_text(
+            placemark_serial = 0
+
+            for polygon in type_polygons:
+                coordinate_texts = (
+                    cls._build_coordinate_texts(
                         polygon
                     )
                 )
 
-                if not coordinate_text:
-                    continue
+                for coordinate_text in coordinate_texts:
+                    if not coordinate_text:
+                        continue
 
-                placemark = ET.SubElement(
-                    folder,
-                    cls._tag("Placemark"),
-                )
+                    placemark_serial += 1
 
-                placemark_name = ET.SubElement(
-                    placemark,
-                    cls._tag("name"),
-                )
-
-                polygon_group = polygon.get(
-                    "polygon_group",
-                    "DEFAULT",
-                )
-
-                placemark_name.text = (
-                    cls._polygon_display_name(
-                        table_type,
-                        polygon_group,
-                        polygon_index,
+                    placemark = ET.SubElement(
+                        folder,
+                        cls._tag("Placemark"),
                     )
-                )
 
-                style_url = ET.SubElement(
-                    placemark,
-                    cls._tag("styleUrl"),
-                )
-
-                style_url.text = (
-                    f"#style_{table_type}"
-                    if table_type
-                    in cls.POLYGON_COLORS
-                    else "#style_DIGER"
-                )
-
-                description = ET.SubElement(
-                    placemark,
-                    cls._tag("description"),
-                )
-
-                description.text = (
-                    cls._polygon_description(
-                        project_model,
-                        polygon,
-                        polygon_index,
+                    placemark_name = ET.SubElement(
+                        placemark,
+                        cls._tag("name"),
                     )
-                )
 
-                polygon_element = ET.SubElement(
-                    placemark,
-                    cls._tag("Polygon"),
-                )
+                    polygon_group = polygon.get(
+                        "polygon_group",
+                        "DEFAULT",
+                    )
 
-                tessellate = ET.SubElement(
-                    polygon_element,
-                    cls._tag("tessellate"),
-                )
+                    placemark_name.text = (
+                        cls._polygon_display_name(
+                            table_type,
+                            polygon_group,
+                            placemark_serial,
+                        )
+                    )
 
-                tessellate.text = "1"
+                    style_url = ET.SubElement(
+                        placemark,
+                        cls._tag("styleUrl"),
+                    )
 
-                outer_boundary = ET.SubElement(
-                    polygon_element,
-                    cls._tag("outerBoundaryIs"),
-                )
+                    style_url.text = (
+                        f"#style_{table_type}"
+                        if table_type
+                        in cls.POLYGON_COLORS
+                        else "#style_DIGER"
+                    )
 
-                linear_ring = ET.SubElement(
-                    outer_boundary,
-                    cls._tag("LinearRing"),
-                )
+                    description = ET.SubElement(
+                        placemark,
+                        cls._tag("description"),
+                    )
 
-                coordinates_element = ET.SubElement(
-                    linear_ring,
-                    cls._tag("coordinates"),
-                )
+                    description.text = (
+                        cls._polygon_description(
+                            project_model,
+                            polygon,
+                            placemark_serial,
+                        )
+                    )
 
-                coordinates_element.text = (
-                    coordinate_text
-                )
+                    polygon_element = ET.SubElement(
+                        placemark,
+                        cls._tag("Polygon"),
+                    )
+
+                    tessellate = ET.SubElement(
+                        polygon_element,
+                        cls._tag("tessellate"),
+                    )
+
+                    tessellate.text = "1"
+
+                    outer_boundary = ET.SubElement(
+                        polygon_element,
+                        cls._tag("outerBoundaryIs"),
+                    )
+
+                    linear_ring = ET.SubElement(
+                        outer_boundary,
+                        cls._tag("LinearRing"),
+                    )
+
+                    coordinates_element = ET.SubElement(
+                        linear_ring,
+                        cls._tag("coordinates"),
+                    )
+
+                    coordinates_element.text = (
+                        coordinate_text
+                    )
 
     @staticmethod
     def _display_table_type(
@@ -443,8 +449,16 @@ class KMLExporter:
         cls,
         polygon,
     ):
-        coordinate_lines = []
+        texts = cls._build_coordinate_texts(polygon)
+        if not texts:
+            return ""
+        return texts[0]
 
+    @classmethod
+    def _build_coordinate_texts(
+        cls,
+        polygon,
+    ):
         points = polygon.get(
             "points",
             [],
@@ -468,8 +482,22 @@ class KMLExporter:
             )
 
         if not valid_points:
+            return []
+
+        rings = repair_lonlat_rings(valid_points)
+        texts = []
+        for ring in rings:
+            text = cls._format_kml_pairs(ring)
+            if text:
+                texts.append(text)
+        return texts
+
+    @staticmethod
+    def _format_kml_pairs(valid_points):
+        if not valid_points:
             return ""
 
+        coordinate_lines = []
         for longitude, latitude in valid_points:
             coordinate_lines.append(
                 f"{longitude},{latitude},0"
@@ -478,7 +506,6 @@ class KMLExporter:
         first_longitude, first_latitude = (
             valid_points[0]
         )
-
         last_longitude, last_latitude = (
             valid_points[-1]
         )

@@ -1,6 +1,10 @@
 import re
 
-from src.coordinate.state_machine import parse_coordinate_blocks
+from src.coordinate.state_machine import (
+    NUMBER_TOKEN_PATTERN,
+    parse_coordinate_blocks,
+    parse_localized_number,
+)
 from src.coordinate.table_classifier import TableClassifier
 
 
@@ -106,9 +110,7 @@ class TableDetector:
         "JEOLOJIK MODEL",
     )
 
-    NUMBER_PATTERN = re.compile(
-        r"-?\d+(?:[.,]\d+)?"
-    )
+    NUMBER_PATTERN = NUMBER_TOKEN_PATTERN
 
     PAGE_MARKER_PATTERN = re.compile(
         r"^--- Sayfa (?P<page>\d+) "
@@ -466,8 +468,8 @@ class TableDetector:
         for line in lines:
             for number_text in cls.NUMBER_PATTERN.findall(line):
                 try:
-                    value = float(
-                        number_text.replace(",", ".")
+                    value = parse_localized_number(
+                        number_text
                     )
                 except ValueError:
                     continue
@@ -562,11 +564,8 @@ class TableDetector:
 
             for number_text in numbers:
                 try:
-                    value = float(
-                        number_text.replace(
-                            ",",
-                            ".",
-                        )
+                    value = parse_localized_number(
+                        number_text
                     )
                 except ValueError:
                     continue
@@ -977,11 +976,8 @@ class TableDetector:
 
             for number_text in numbers:
                 try:
-                    value = float(
-                        number_text.replace(
-                            ",",
-                            ".",
-                        )
+                    value = parse_localized_number(
+                        number_text
                     )
 
                 except ValueError:

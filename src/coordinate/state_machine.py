@@ -12,10 +12,27 @@ NUMERIC_LABEL_PATTERN = re.compile(
     r"^\d+$"
 )
 
+COMBINED_NUMBER_PATTERN = (
+    r"([+-]?(?:"
+    r"\d{1,3}(?:\.\d{3}){2,}(?:,\d+)?|"
+    r"\d{1,3}(?:\.\d{3})+,\d+|"
+    r"\d{1,3}(?:,\d{3}){2,}(?:\.\d+)?|"
+    r"\d{1,3}(?:,\d{3})+\.\d+|"
+    r"\d{1,3}(?:\s\d{3})+(?:[.,]\d+)?|"
+    r"\d+(?:[.,]\d+)?"
+    r"))"
+)
+
 COMBINED_GEOGRAPHIC_PATTERN = re.compile(
-    r"^([+-]?\d+(?:[.,]\d+)?)"
-    r"\s*:\s*"
-    r"([+-]?\d+(?:[.,]\d+)?)$"
+    r"^"
+    + COMBINED_NUMBER_PATTERN
+    + r"\s*:\s*"
+    + COMBINED_NUMBER_PATTERN
+    + r"$"
+)
+
+NUMBER_TOKEN_PATTERN = re.compile(
+    COMBINED_NUMBER_PATTERN
 )
 
 
@@ -28,22 +45,59 @@ def is_ignorable_table_context_line(line) -> bool:
 
 def is_number(value: str) -> bool:
     try:
-        float(
-            value
-            .replace(",", ".")
-            .strip()
-        )
+        parse_localized_number(value)
         return True
 
-    except ValueError:
+    except (TypeError, ValueError):
         return False
 
 
 def to_float(value: str) -> float:
+    return parse_localized_number(value)
+
+
+def parse_localized_number(value: str) -> float:
+    text = str(value).strip().strip(":").strip()
+    if not text:
+        raise ValueError("empty numeric token")
+
+    if re.fullmatch(
+        r"[+-]?\d{1,3}(?:\.\d{3}){2,}(?:,\d+)?",
+        text,
+    ) or re.fullmatch(
+        r"[+-]?\d{1,3}(?:\.\d{3})+,\d+",
+        text,
+    ):
+        return float(
+            text.replace(".", "").replace(",", ".")
+        )
+
+    if re.fullmatch(
+        r"[+-]?\d{1,3}(?:,\d{3}){2,}(?:\.\d+)?",
+        text,
+    ) or re.fullmatch(
+        r"[+-]?\d{1,3}(?:,\d{3})+\.\d+",
+        text,
+    ):
+        return float(
+            text.replace(",", "")
+        )
+
+    if re.fullmatch(
+        r"[+-]?\d{1,3}(?:\s\d{3})+(?:[.,]\d+)?",
+        text,
+    ):
+        compact = text.replace(" ", "")
+        if compact.count(",") == 1 and "." not in compact:
+            return float(
+                compact.replace(",", ".")
+            )
+        return float(
+            compact.replace(",", "")
+        )
+
     return float(
-        value
-        .replace(",", ".")
-        .strip()
+        text.replace(",", ".")
     )
 
 
@@ -610,11 +664,36 @@ def _looks_like_invalid_geographic_attempt(lines, start, utm_y, utm_x):
 
 
 def _clean_numeric_token(token: str) -> str:
-    return (
+    text = (
         token.strip()
-        .replace(",", ".")
+        .strip(":")
         .replace(" ", "")
     )
+
+    if (
+        re.fullmatch(
+            r"[+-]?\d{1,3}(?:\.\d{3}){2,}(?:,\d+)?",
+            text,
+        )
+        or re.fullmatch(
+            r"[+-]?\d{1,3}(?:\.\d{3})+,\d+",
+            text,
+        )
+        or re.fullmatch(
+            r"[+-]?\d{1,3}(?:,\d{3}){2,}(?:\.\d+)?",
+            text,
+        )
+        or re.fullmatch(
+            r"[+-]?\d{1,3}(?:,\d{3})+\.\d+",
+            text,
+        )
+    ):
+        return format(
+            parse_localized_number(text),
+            "f",
+        )
+
+    return text.replace(",", ".")
 
 def _recover_missing_decimal(value: float):
     """
@@ -752,18 +831,13 @@ def _find_coordinate_sequence(tokens):
     direct_values = []
 
     for token in tokens:
-        if not re.fullmatch(
-            r"[+-]?\d*(?:[.,]\d*)?",
-            token,
-        ):
+        if not is_number(token):
             direct_values.append(None)
             continue
 
         try:
             direct_values.append(
-                float(
-                    _clean_numeric_token(token)
-                )
+                parse_localized_number(token)
             )
         except ValueError:
             direct_values.append(None)
