@@ -149,13 +149,11 @@ LAYOUT_CLASSES = (
             "export_path_il_ek_sicil_company",
         ),
         "contract": (
-            "Sicil and company tokens come from general extractor rules. "
-            "Page headers and field labels are not export-name tokens. "
-            "Ek-1 is ÇED Raporu / Nihai ÇED; Ek-2 is Proje Tanıtım "
-            "Dosyası / PTD. Export relative path is "
-            "{İL}/{Ek-1|Ek-2}/{sicil} - {firma}.kml. Missing il, Ek "
-            "tip, sicil, or firma stay visible as Bilinmiyor; the stem "
-            "always starts with sicil (or that placeholder)."
+            "Restore {İL}/{Ek-1|Ek-2}/{sicil} - {firma}.kml. PR #2 "
+            "(33cc525) inverted the stem to company-then-sicil; GUI "
+            "since 6e2515c wrote flat under the root. Ek-1 is ÇED "
+            "Raporu / Nihai ÇED; Ek-2 is PTD. Missing il, Ek tip, "
+            "sicil, or firma stay visible as Bilinmiyor."
         ),
     },
 )

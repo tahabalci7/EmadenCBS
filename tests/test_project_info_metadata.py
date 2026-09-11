@@ -126,6 +126,8 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         self.assertNotIn("NUMARALI", name)
 
     def test_export_relative_path_uses_il_ek_sicil_company(self):
+        """Destekci path contract restored after PR #2 company-first stems."""
+
         relative = ProjectInfoExtractor.build_export_relative_path(
             {
                 "province": "Ankara",

@@ -836,9 +836,11 @@ class ProjectInfoExtractor:
         """
         KML belge adı: `{sicil} - {firma}`.
 
-        Sicil yoksa Bilinmiyor yer tutucusu önde kalır;
-        şirket-only stem üretilmez. NUMARALI maden-cinsi
-        kalıntıları ayırt edici parça değildir.
+        Destekci / ürün sözleşmesi sicil-önde ister. PR #2
+        (33cc525) `build_project_export_name` içinde
+        şirket-sonra-sicil sırasını kodladı; bu fonksiyon
+        o regresyonu geri alır. Sicil yoksa Bilinmiyor önde
+        kalır; şirket-only stem üretilmez.
         """
 
         return cls.build_export_filename(
@@ -873,12 +875,17 @@ class ProjectInfoExtractor:
         default_stem="Proje",
     ):
         """
-        Ürün sözleşmesi:
+        KML yazım yolu (ürün sözleşmesi / regresyon geri alımı):
 
         `{İL}/Ek-1|Ek-2/{sicil} - {firma}.kml`
 
-        Eksik il / Ek tipi / sicil / firma Bilinmiyor olarak
-        görünür; şirket-only düz dosya yazılmaz.
+        Bu iç içe yol builder git geçmişinde baseline
+        (6e2515c) sonrası yok: GUI düz `{root}/{firma}_{sicil}`
+        yazıyordu; `src/core/kml_export.py` o günden beri
+        boş stub. e-ÇED indirme ağacı
+        `{İL}/EK-1|EK-2/` (`CEDBatchProcessor`) aynı klasör
+        sözleşmesini koruyordu. Eksik il / Ek / sicil / firma
+        Bilinmiyor olarak görünür.
         """
 
         info = project_info or {}

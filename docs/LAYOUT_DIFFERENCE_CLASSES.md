@@ -33,7 +33,7 @@ coordinates, polygons, and reason codes together.
 | CRS inheritance | `datum_detector`, `crs_resolver`, `coordinate_engine` | Document or prior-table HIGH CRS supplies WGS84 when the table slice has no Zon. `ED 50` and `Dilim 35–39` are explicit CRS aliases. |
 | Ring geometry | `ring_geometry`, `polygon_builder`, `kml_exporter` | Bow-tie uncross, multi-cross split, lon/lat repair independent of UTM, degree-scale collapse ≠ 0.01 m. Compact rings (span ≪ 0.01°) must not leave multi-cross leftovers in **exported KML text**. |
 | Grouping / typing | `table_classifier`, `state_machine`, `polygon_builder` | NOLU POLİGON / ÇED / ruhsat. **NOLU NOKTA / KÖŞE are vertex labels, not polygon headings** (otherwise diagnose points become poly=0). `<3` verts reported. RUHSAT not erased when geometry matches ÇED. |
-| Metadata / KML naming | `project_info_extractor`, `kml_exporter` | Sicil + usable company tokens; strip page-header / label junk. Ek-1 = ÇED Raporu / Nihai ÇED, Ek-2 = PTD / Proje Tanıtım Dosyası. Export path `{İL}/{Ek-1\|Ek-2}/{sicil} - {firma}.kml`; missing fields stay visible. |
+| Metadata / KML naming | `project_info_extractor`, `kml_exporter` | Restore `{İL}/{Ek-1\|Ek-2}/{sicil} - {firma}.kml`. PR #2 (`33cc525`) inverted the stem to company-then-sicil and kept flat GUI writes. Ek-1 = ÇED Raporu / Nihai ÇED, Ek-2 = PTD. Missing il/Ek/sicil/firma stay visible. |
 
 ## Reason codes
 
