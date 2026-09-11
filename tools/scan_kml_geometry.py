@@ -82,7 +82,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     target = args.path
     files = (
-        sorted(target.glob("*.kml"))
+        sorted(target.rglob("*.kml"))
         if target.is_dir()
         else [target]
     )

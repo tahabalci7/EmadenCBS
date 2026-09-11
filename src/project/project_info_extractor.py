@@ -1,10 +1,24 @@
 import re
 import unicodedata
+from pathlib import Path
 
 
 class ProjectInfoExtractor:
 
-    def extract(self, text):
+    UNKNOWN = "Bilinmiyor"
+    EK_TIP_EK1 = "Ek-1"
+    EK_TIP_EK2 = "Ek-2"
+    EK_FOLDER_NAMES = (
+        EK_TIP_EK1,
+        EK_TIP_EK2,
+    )
+
+    def extract(
+        self,
+        text,
+        source_path=None,
+        project_type=None,
+    ):
         normalized_text = self._normalize_text(text)
 
         province, district = self._extract_location(
@@ -19,7 +33,7 @@ class ProjectInfoExtractor:
             district
         )
 
-        return {
+        info = {
             "company": self._extract_company(
                 normalized_text
             ),
@@ -31,9 +45,16 @@ class ProjectInfoExtractor:
             ),
             "province": province,
             "district": district,
+            "ek_tip": self._extract_ek_tip(
+                normalized_text
+            ),
         }
 
-    UNKNOWN = "Bilinmiyor"
+        return self._fill_missing_context(
+            info,
+            source_path=source_path,
+            project_type=project_type,
+        )
 
     _COMPANY_LABEL_PREFIX = re.compile(
         r"^(?:"
@@ -56,6 +77,171 @@ class ProjectInfoExtractor:
         r")+",
         flags=re.IGNORECASE,
     )
+
+    _UNSAFE_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+    _EK2_TITLE = re.compile(
+        r"\b(?:PROJE\s+TANITIM\s+DOSYASI|PTD\s+DOSYASI)\b",
+        flags=re.IGNORECASE,
+    )
+    _EK1_TITLE = re.compile(
+        r"\b(?:"
+        r"NIHAI\s+CED|"
+        r"CED\s+RAPORU|"
+        r"CED\s+BASVURU\s+DOSYASI|"
+        r"CEVRESEL\s+ETKI\s+DEGERLENDIRMESI"
+        r")\b",
+        flags=re.IGNORECASE,
+    )
+    _EK_EXPLICIT_LINE = re.compile(
+        r"^\s*EK[\s.\-]*([12]|II|I)\s*$",
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    def _extract_ek_tip(self, text):
+        """
+        ÇED Ek tipi / belge sınıfı: Ek-1 (ÇED Raporu) veya
+        Ek-2 (Proje Tanıtım Dosyası / PTD). Kapak ve başlık
+        penceresine bakılır; yönetmelik metnindeki EK-1/EK-2
+        listeleri belge sınıfı sayılmaz.
+        """
+
+        if not text:
+            return self.UNKNOWN
+
+        search_text = self._fold_ascii_tr(text[:4000])
+        ptd_match = self._EK2_TITLE.search(search_text)
+        ced_match = self._EK1_TITLE.search(search_text)
+
+        if ptd_match and ced_match:
+            if ptd_match.start() <= ced_match.start():
+                return self.EK_TIP_EK2
+            return self.EK_TIP_EK1
+
+        if ptd_match:
+            return self.EK_TIP_EK2
+
+        if ced_match:
+            return self.EK_TIP_EK1
+
+        explicit = self._EK_EXPLICIT_LINE.search(search_text)
+        if explicit is not None:
+            token = self._fold_ascii_tr(explicit.group(1))
+            token = re.sub(r"[\s._\-]+", "", token)
+            if token in {"1", "I"}:
+                return self.EK_TIP_EK1
+            if token in {"2", "II"}:
+                return self.EK_TIP_EK2
+
+        return self.UNKNOWN
+
+    def _fill_missing_context(
+        self,
+        info,
+        source_path=None,
+        project_type=None,
+    ):
+        path_province, path_ek = self.context_from_source_path(
+            source_path
+        )
+        hint_ek = self.normalize_ek_tip(project_type)
+
+        if (
+            not self._usable_name_token(info.get("province"))
+            and path_province
+        ):
+            info["province"] = self._format_location(
+                path_province
+            )
+
+        if not self._is_known_ek_tip(info.get("ek_tip")):
+            if self._is_known_ek_tip(path_ek):
+                info["ek_tip"] = path_ek
+            elif self._is_known_ek_tip(hint_ek):
+                info["ek_tip"] = hint_ek
+
+        return info
+
+    @classmethod
+    def context_from_source_path(cls, source_path):
+        """
+        e-ÇED indirme düzeni: .../{İL}/{EK-1|EK-2}/dosya.pdf
+
+        İl veya Ek tipi allowlist değildir; yalnız bu genel
+        klasör kalıbını okur.
+        """
+
+        if not source_path:
+            return "", ""
+
+        try:
+            parts = Path(source_path).parts
+        except TypeError:
+            return "", ""
+
+        for index, part in enumerate(parts):
+            ek_tip = cls.normalize_ek_tip(part)
+            if not cls._is_known_ek_tip(ek_tip):
+                continue
+            province = parts[index - 1] if index > 0 else ""
+            return str(province or ""), ek_tip
+
+        return "", ""
+
+    @classmethod
+    def normalize_ek_tip(cls, value):
+        if value is None:
+            return cls.UNKNOWN
+
+        raw = str(value).strip()
+        if not raw:
+            return cls.UNKNOWN
+
+        folded = cls._fold_ascii_tr(raw)
+        compact = re.sub(r"[\s._\-]+", "", folded)
+
+        if compact in {"EK1", "EKI"}:
+            return cls.EK_TIP_EK1
+        if compact in {"EK2", "EKII"}:
+            return cls.EK_TIP_EK2
+
+        if compact in {
+            "CEDRAPORU",
+            "NIHAICED",
+            "NIHAICEDRAPORU",
+            "CEDBASVURUDOSYASI",
+        }:
+            return cls.EK_TIP_EK1
+
+        if compact in {
+            "PTD",
+            "PTDDOSYASI",
+            "PROJETANITIMDOSYASI",
+        }:
+            return cls.EK_TIP_EK2
+
+        return cls.UNKNOWN
+
+    @classmethod
+    def _is_known_ek_tip(cls, value):
+        return cls.normalize_ek_tip(value) in cls.EK_FOLDER_NAMES
+
+    @classmethod
+    def _fold_ascii_tr(cls, value):
+        text = unicodedata.normalize(
+            "NFKC",
+            str(value or ""),
+        ).upper()
+        return (
+            text.replace("İ", "I")
+            .replace("I\u0307", "I")
+            .replace("Ş", "S")
+            .replace("Ğ", "G")
+            .replace("Ü", "U")
+            .replace("Ö", "O")
+            .replace("Ç", "C")
+        )
+
     @staticmethod
     def _normalize_turkish_unicode(value):
         if not value:
@@ -526,6 +712,12 @@ class ProjectInfoExtractor:
                 True,
             ),
             (
+                r"\bS[Iİ]C[Iİ]L\b"
+                r"(?:[^\d\n]{0,40})"
+                r"(\d{4,10})\b",
+                False,
+            ),
+            (
                 r"\bRUHSAT\s+S[Iİ]C[Iİ]L\s*"
                 r"(?:NO(?:SU)?|NUMARASI)?"
                 r"\s*[:.\-]?\s*(\d{4,10})\b",
@@ -603,6 +795,11 @@ class ProjectInfoExtractor:
         if length < 4 or length > 10:
             return False
 
+        # Kapak yılı (2024) sicil değildir; sıkı
+        # "SİCİL NO: 2024" etiketi strong=True ile kalır.
+        if not strong and 1990 <= number <= 2035:
+            return False
+
         # UTM kuzey değeri ruhsat değildir.
         if 3000000 <= number <= 4999999:
             return False
@@ -637,34 +834,19 @@ class ProjectInfoExtractor:
         default="eMadenCBS Projesi",
     ):
         """
-        KML belge adı / dosya adı için şirket + sicil.
+        KML belge adı: `{sicil} - {firma}`.
 
-        Bilinmiyor ve "NUMARALI …" maden-cinsi
-        kalıntıları ayırt edici parça olarak
-        kullanılmaz.
+        Destekci / ürün sözleşmesi sicil-önde ister. PR #2
+        (33cc525) `build_project_export_name` içinde
+        şirket-sonra-sicil sırasını kodladı; bu fonksiyon
+        o regresyonu geri alır. Sicil yoksa Bilinmiyor önde
+        kalır; şirket-only stem üretilmez.
         """
 
-        info = project_info or {}
-
-        company = cls._usable_name_token(
-            info.get("company")
+        return cls.build_export_filename(
+            project_info,
+            default=default,
         )
-        license_no = cls._usable_name_token(
-            info.get("license_no")
-        )
-
-        parts = []
-
-        if company:
-            parts.append(company)
-
-        if license_no:
-            parts.append(license_no)
-
-        if not parts:
-            return default
-
-        return " - ".join(parts)
 
     @classmethod
     def build_export_filename(
@@ -672,36 +854,77 @@ class ProjectInfoExtractor:
         project_info,
         default="Proje",
     ):
+        """Dosya gövdesi: `{sicil} - {firma}` (klasörsüz)."""
+
         info = project_info or {}
-        parts = []
-
-        company = cls._usable_name_token(
-            info.get("company")
+        license_no = (
+            cls._usable_name_token(info.get("license_no"))
+            or cls.UNKNOWN
         )
-        license_no = cls._usable_name_token(
-            info.get("license_no")
+        company = (
+            cls._usable_name_token(info.get("company"))
+            or cls.UNKNOWN
+        )
+        stem = f"{license_no} - {company}"
+        return cls._sanitize_path_component(stem, default=default)
+
+    @classmethod
+    def build_export_relative_path(
+        cls,
+        project_info,
+        default_stem="Proje",
+    ):
+        """
+        KML yazım yolu (ürün sözleşmesi / regresyon geri alımı):
+
+        `{İL}/Ek-1|Ek-2/{sicil} - {firma}.kml`
+
+        Bu iç içe yol builder git geçmişinde baseline
+        (6e2515c) sonrası yok: GUI düz `{root}/{firma}_{sicil}`
+        yazıyordu; `src/core/kml_export.py` o günden beri
+        boş stub. e-ÇED indirme ağacı
+        `{İL}/EK-1|EK-2/` (`CEDBatchProcessor`) aynı klasör
+        sözleşmesini koruyordu. Eksik il / Ek / sicil / firma
+        Bilinmiyor olarak görünür.
+        """
+
+        info = project_info or {}
+        province = cls._sanitize_path_component(
+            cls._usable_name_token(info.get("province"))
+            or cls.UNKNOWN,
+            default=cls.UNKNOWN,
+        )
+        ek_source = info.get("ek_tip")
+        if not cls._is_known_ek_tip(ek_source):
+            ek_source = info.get("project_type")
+        ek_folder = cls._ek_folder_name(ek_source)
+        stem = cls.build_export_filename(
+            info,
+            default=default_stem,
+        )
+        return str(
+            Path(province) / ek_folder / f"{stem}.kml"
         )
 
-        if company:
-            parts.append(company)
+    @classmethod
+    def _ek_folder_name(cls, value):
+        ek_tip = cls.normalize_ek_tip(value)
+        if cls._is_known_ek_tip(ek_tip):
+            return ek_tip
+        return cls.UNKNOWN
 
-        if license_no:
-            parts.append(license_no)
-
-        raw_name = "_".join(parts) if parts else default
-
-        file_name = re.sub(
-            r'[<>:"/\\|?*]',
-            "_",
-            raw_name,
+    @classmethod
+    def _sanitize_path_component(cls, value, default=""):
+        text = cls._normalize_turkish_unicode(
+            str(value or "")
         )
-        file_name = re.sub(
-            r"\s+",
-            "_",
-            file_name,
-        ).strip("._ ")
-
-        return file_name or default
+        text = cls._UNSAFE_PATH_CHARS.sub("_", text)
+        text = re.sub(r"\s+", " ", text).strip(" ._")
+        if text in {"", ".", ".."}:
+            return default
+        if len(text) > 150:
+            text = text[:150].rstrip(" ._")
+        return text or default
 
     @classmethod
     def _usable_name_token(cls, value):
@@ -810,7 +1033,46 @@ class ProjectInfoExtractor:
 
             return province, district
 
-        return "Bilinmiyor", "Bilinmiyor"
+        search_text = text[:20000] if text else ""
+        province = self._extract_province_only(search_text)
+        district = self._extract_district_only(search_text)
+        return province, district
+
+    def _extract_province_only(self, text):
+        patterns = [
+            (
+                r"([A-ZÇĞİÖŞÜ]"
+                r"[A-ZÇĞİÖŞÜa-zçğıöşü]+)"
+                r"\s+İLİ\b"
+            ),
+            (
+                r"\bİLİ?\s*[:.\-]\s*"
+                r"([A-ZÇĞİÖŞÜ]"
+                r"[A-ZÇĞİÖŞÜa-zçğıöşü]+)"
+            ),
+        ]
+        value = self._find_first_match(text, patterns)
+        if value == self.UNKNOWN:
+            return self.UNKNOWN
+        return self._format_location(value)
+
+    def _extract_district_only(self, text):
+        patterns = [
+            (
+                r"([A-ZÇĞİÖŞÜ]"
+                r"[A-ZÇĞİÖŞÜa-zçğıöşü]+)"
+                r"\s+İLÇESİ\b"
+            ),
+            (
+                r"\bİLÇE(?:Sİ)?\s*[:.\-]\s*"
+                r"([A-ZÇĞİÖŞÜ]"
+                r"[A-ZÇĞİÖŞÜa-zçğıöşü]+)"
+            ),
+        ]
+        value = self._find_first_match(text, patterns)
+        if value == self.UNKNOWN:
+            return self.UNKNOWN
+        return self._format_location(value)
 
     def _find_first_match(
         self,

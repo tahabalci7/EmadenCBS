@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from src.project.project_info_extractor import ProjectInfoExtractor
 
@@ -54,6 +55,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         info = self.extractor.extract(text)
         self.assertEqual(info["license_no"], "42077")
+        self.assertEqual(info["ek_tip"], "Ek-1")
 
     def test_coordinate_labels_are_not_license_numbers(self):
         text = "\n".join(
@@ -92,8 +94,11 @@ class ProjectInfoMetadataTests(unittest.TestCase):
                 "mine_type": "NUMARALI MANYEZİT MADEN",
             }
         )
-        self.assertIn("42077", name)
-        self.assertNotIn("Bilinmiyor", name)
+        self.assertTrue(name.startswith("42077"))
+        self.assertEqual(
+            name,
+            "42077 - Söğütsen Seramik Sanayi",
+        )
         self.assertNotIn("NUMARALI", name)
 
     def test_filename_does_not_lead_with_bilinmiyor_when_sicil_exists(self):
@@ -104,11 +109,11 @@ class ProjectInfoMetadataTests(unittest.TestCase):
                 "mine_type": "NUMARALI BİTÜMLÜ ŞEYL",
             }
         )
-        self.assertEqual(file_name, "38302")
-        self.assertNotIn("Bilinmiyor", file_name)
+        self.assertEqual(file_name, "38302 - Bilinmiyor")
+        self.assertTrue(file_name.startswith("38302"))
         self.assertNotIn("NUMARALI", file_name)
 
-    def test_junk_mine_type_is_not_a_name_token(self):
+    def test_missing_sicil_keeps_placeholder_in_front(self):
         name = ProjectInfoExtractor.build_project_export_name(
             {
                 "company": "Ülkem İnşaat Mad.",
@@ -116,9 +121,129 @@ class ProjectInfoMetadataTests(unittest.TestCase):
                 "mine_type": "NUMARALI PERLIT",
             }
         )
-        self.assertEqual(name, "Ülkem İnşaat Mad.")
+        self.assertEqual(name, "Bilinmiyor - Ülkem İnşaat Mad")
+        self.assertTrue(name.startswith("Bilinmiyor"))
         self.assertNotIn("NUMARALI", name)
-        self.assertNotIn("Bilinmiyor", name)
+
+    def test_export_relative_path_uses_il_ek_sicil_company(self):
+        """Destekci path contract restored after PR #2 company-first stems."""
+
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                "province": "Ankara",
+                "ek_tip": "Ek-1",
+                "license_no": "3927",
+                "company": "ALKİM A.Ş.",
+            }
+        )
+        self.assertEqual(
+            Path(relative),
+            Path("Ankara") / "Ek-1" / "3927 - ALKİM A.Ş.kml",
+        )
+
+    def test_export_relative_path_accepts_project_type_alias(self):
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                "province": "Konya",
+                "project_type": "EK-2",
+                "license_no": "86538",
+                "company": "Madinsan Ltd. Şti.",
+            }
+        )
+        self.assertEqual(
+            Path(relative),
+            Path("Konya") / "Ek-2" / "86538 - Madinsan Ltd. Şti.kml",
+        )
+
+    def test_missing_fields_stay_visible_in_relative_path(self):
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                "company": "Koyuncu Nakliye Ltd. Şti.",
+            }
+        )
+        self.assertEqual(
+            Path(relative),
+            Path("Bilinmiyor")
+            / "Bilinmiyor"
+            / "Bilinmiyor - Koyuncu Nakliye Ltd. Şti.kml",
+        )
+
+    def test_path_separators_in_company_are_sanitized(self):
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                "province": "İzmir",
+                "ek_tip": "Ek-2",
+                "license_no": "53284",
+                "company": "Uytaş A/S",
+            }
+        )
+        self.assertEqual(
+            Path(relative),
+            Path("İzmir") / "Ek-2" / "53284 - Uytaş A_S.kml",
+        )
+
+    def test_ek_tip_from_ced_cover_title(self):
+        text = "\n".join(
+            [
+                "NİHAİ ÇED RAPORU",
+                "ANKARA İLİ",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "SİCİL NO: 3927",
+            ]
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["ek_tip"], "Ek-1")
+        self.assertEqual(info["province"], "Ankara")
+        self.assertEqual(info["license_no"], "3927")
+
+    def test_ek_tip_from_ptd_cover_title(self):
+        text = "\n".join(
+            [
+                "PROJE TANITIM DOSYASI",
+                "İL: Konya",
+                "PROJE SAHİBİNİN ADI: Madinsan Ltd. Şti.",
+                "SICIL NO: 86538",
+            ]
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["ek_tip"], "Ek-2")
+        self.assertEqual(info["province"], "Konya")
+        self.assertEqual(info["license_no"], "86538")
+
+    def test_source_path_fills_missing_il_and_ek_tip(self):
+        text = "\n".join(
+            [
+                "PROJE SAHİBİNİN ADI: Koyuncu Nakliye Ltd. Şti.",
+                "SICIL NO: 11880",
+            ]
+        )
+        info = self.extractor.extract(
+            text,
+            source_path="/data/downloads/ANKARA/EK-2/ornek.pdf",
+        )
+        self.assertEqual(info["ek_tip"], "Ek-2")
+        self.assertEqual(info["province"], "Ankara")
+        relative = ProjectInfoExtractor.build_export_relative_path(info)
+        self.assertEqual(
+            Path(relative),
+            Path("Ankara")
+            / "Ek-2"
+            / "11880 - Koyuncu Nakliye Ltd. Şti.kml",
+        )
+
+    def test_pdf_ek_tip_wins_over_source_folder(self):
+        text = "\n".join(
+            [
+                "Nihai ÇED Raporu",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "SICIL NO: 42077",
+            ]
+        )
+        info = self.extractor.extract(
+            text,
+            source_path="/data/downloads/ANKARA/EK-2/ornek.pdf",
+        )
+        self.assertEqual(info["ek_tip"], "Ek-1")
 
 
 if __name__ == "__main__":

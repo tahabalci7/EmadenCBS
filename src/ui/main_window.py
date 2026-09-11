@@ -275,7 +275,8 @@ class MainWindow(QMainWindow):
 
         project_info = (
             self.project_info_extractor.extract(
-                raw_text
+                raw_text,
+                source_path=self.current_pdf,
             )
         )
 
@@ -500,6 +501,11 @@ class MainWindow(QMainWindow):
         )
 
         text += (
+            f"Ek Tipi : "
+            f"{project_model.project_info.get('ek_tip', 'Bilinmiyor')}\n"
+        )
+
+        text += (
             f"İl : "
             f"{project_model.project_info.get('province', 'Bilinmiyor')}\n"
         )
@@ -712,14 +718,20 @@ class MainWindow(QMainWindow):
             {},
         )
 
-        file_name = ProjectInfoExtractor.build_export_filename(
-            project_info,
-            default="Proje",
+        relative_path = (
+            ProjectInfoExtractor.build_export_relative_path(
+                project_info
+            )
         )
 
         file_path = os.path.join(
             export_directory,
-            f"{file_name}.kml",
+            relative_path,
+        )
+
+        os.makedirs(
+            os.path.dirname(file_path),
+            exist_ok=True,
         )
 
         try:
