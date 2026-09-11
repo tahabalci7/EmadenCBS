@@ -48,6 +48,16 @@ Stable identifiers for GUI and batch (`pipeline_reason_codes`):
 - `KML_NO_WGS84`
 - `KML_RING_STILL_CROSSED`
 
+## Destekci standing QA
+
+Apply on this PR and later geometry work:
+
+1. Destekci reviews KML lon/lat after export. Remaining kelebek is reported as a **geometry class** (vertex scale, leftover crossings after repair/split), not as a one-off PDF chase.
+2. Prefer a general fix for that class. Named PDFs are witnesses only — no filename allowlists.
+3. If a class still cannot yield clean ruhsat/ÇED rings after a good-faith general fix, Destekci opens the PDF UI so the owner can help select tables. Do not block the PR forever on one witness.
+
+Compact-degree leftover class (span ≪ 0.01°, ~95 vertices, a handful of crossings after lon/lat repair): `repair_lonlat_rings` must finish remainders (iterative split or last-resort hull). Exported KML coordinate text, including closed LinearRings, must have 0 crossings. `tools/scan_kml_geometry.py` is the file-scan contract Destekci uses.
+
 ## How to add a new layout class
 
 1. Add an entry to `LAYOUT_CLASSES` (id, modules, capabilities, contract).

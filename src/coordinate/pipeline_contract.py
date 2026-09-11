@@ -189,12 +189,39 @@ def inspect_kml_polygons(polygons):
         polygon_group = polygon.get("polygon_group", "DEFAULT")
         if not texts:
             points = polygon.get("points") or []
+            has_wgs84 = any(
+                (
+                    point.get("transformed_longitude") not in (None, "")
+                    and point.get("transformed_latitude") not in (None, "")
+                )
+                or (
+                    point.get("longitude") not in (None, "")
+                    and point.get("latitude") not in (None, "")
+                )
+                for point in points
+            )
             has_utm = any(
                 point.get("y") not in (None, "")
                 and point.get("x") not in (None, "")
                 for point in points
             )
-            if has_utm:
+            if has_wgs84:
+                diagnostics.append(
+                    make_diagnostic(
+                        KML_RING_STILL_CROSSED,
+                        severity="warning",
+                        stage="kml_exporter",
+                        class_id="ring_geometry",
+                        table_type=table_type,
+                        polygon_group=polygon_group,
+                        point_count=len(points),
+                        detail=(
+                            "KML had WGS84 vertices but repair could not "
+                            "emit a simple ring."
+                        ),
+                    )
+                )
+            elif has_utm:
                 diagnostics.append(
                     make_diagnostic(
                         KML_NO_WGS84,
@@ -214,7 +241,10 @@ def inspect_kml_polygons(polygons):
 
         for text in texts:
             pairs = _kml_text_pairs(text)
-            if count_lonlat_crossings(pairs):
+            closed = _kml_text_pairs(text, strip_close=False)
+            if count_lonlat_crossings(pairs) or (
+                closed and count_lonlat_crossings(closed)
+            ):
                 diagnostics.append(
                     make_diagnostic(
                         KML_RING_STILL_CROSSED,
@@ -229,7 +259,7 @@ def inspect_kml_polygons(polygons):
     return diagnostics
 
 
-def _kml_text_pairs(coordinate_text):
+def _kml_text_pairs(coordinate_text, strip_close=True):
     pairs = []
     for line in str(coordinate_text).splitlines():
         line = line.strip()
@@ -240,7 +270,8 @@ def _kml_text_pairs(coordinate_text):
             continue
         pairs.append((float(parts[0]), float(parts[1])))
     if (
-        len(pairs) >= 2
+        strip_close
+        and len(pairs) >= 2
         and pairs[0][0] == pairs[-1][0]
         and pairs[0][1] == pairs[-1][1]
     ):

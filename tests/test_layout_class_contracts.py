@@ -5,6 +5,8 @@ not projects, provinces, or filenames.
 """
 
 import math
+import os
+import tempfile
 import unittest
 
 from src.coordinate.coordinate_engine import CoordinateEngine
@@ -19,17 +21,22 @@ from src.coordinate.pipeline_contract import (
     DETECTED_TABLE_NO_POINTS,
     GROUP_BELOW_POLYGON_SIZE,
     KML_NO_WGS84,
+    KML_RING_STILL_CROSSED,
     NO_COORDINATE_TABLE,
     collect_pipeline_diagnostics,
+    inspect_kml_polygons,
     reason_codes,
 )
 from src.coordinate.polygon_builder import PolygonBuilder
+from src.coordinate.project_model import ProjectModel
 from src.coordinate.ring_geometry import (
     collapse_consecutive_duplicates,
     count_lonlat_crossings,
     inferred_ring_tolerance,
     repair_lonlat_rings,
     repair_self_intersecting_rings,
+    _force_split_lonlat_pairs,
+    _resolve_lonlat_leftover,
 )
 from src.coordinate.state_machine import (
     parse_coordinate_blocks,
@@ -38,6 +45,7 @@ from src.coordinate.state_machine import (
 from src.coordinate.table_detector import TableDetector
 from src.export.kml_exporter import KMLExporter
 from src.project.project_info_extractor import ProjectInfoExtractor
+from tools.scan_kml_geometry import scan_kml_file
 
 
 def page(page_number, *lines):
@@ -111,6 +119,30 @@ def compact_four_cross_pairs(vertex_count=95, radius=0.003):
     return points
 
 
+def compact_leftover_multi_cross_pairs(vertex_count=95, radius=0.003):
+    """Compact ring whose first force-split still has crossings on both parts.
+
+    Destekci class: ~95 vertices, span ≪ 0.01°, a handful of leftover
+    crossings after a first repair/split. Named PDFs are witnesses only.
+    """
+
+    pairs = []
+    for index in range(vertex_count):
+        angle = 2 * math.pi * index / vertex_count
+        pairs.append(
+            (
+                32.10 + radius * math.cos(angle),
+                37.20 + 0.7 * radius * math.sin(angle),
+            )
+        )
+    points = list(pairs)
+    for twist in range(4):
+        index = 6 + twist * (vertex_count // 4)
+        other = (index + 3) % vertex_count
+        points[index], points[other] = points[other], points[index]
+    return points
+
+
 def parse_kml_coordinate_text(coordinate_text):
     pairs = []
     for line in coordinate_text.splitlines():
@@ -145,6 +177,38 @@ def transformed_kml_texts(pairs):
         ]
     }
     return KMLExporter._build_coordinate_texts(polygon)
+
+
+def compact_mevcut_ced_polygon(pairs):
+    return {
+        "table_type": "MEVCUT_CED_ALANI",
+        "polygon_group": "DEFAULT",
+        "points": [
+            {
+                "name": f"P{index}",
+                "y": 434500 + index,
+                "x": 4205100 + index,
+                "transformed_longitude": longitude,
+                "transformed_latitude": latitude,
+            }
+            for index, (longitude, latitude) in enumerate(pairs)
+        ],
+    }
+
+
+def export_and_scan_kml(pairs):
+    """Destekci path: write KML XML, then scan LinearRing coordinate text."""
+
+    model = ProjectModel(
+        "witness.pdf",
+        [],
+        [compact_mevcut_ced_polygon(pairs)],
+        [],
+    )
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "compact.kml")
+        KMLExporter.export(model, path)
+        return scan_kml_file(path)
 
 
 class LayoutCapabilityMapTests(unittest.TestCase):
@@ -444,6 +508,7 @@ class RingGeometryClassTests(unittest.TestCase):
         for pairs in (
             compact_star_pairs(),
             compact_four_cross_pairs(),
+            compact_leftover_multi_cross_pairs(),
         ):
             span = max(lon for lon, _lat in pairs) - min(
                 lon for lon, _lat in pairs
@@ -458,6 +523,52 @@ class RingGeometryClassTests(unittest.TestCase):
                 self.assertGreaterEqual(len(open_pairs), 3)
                 self.assertEqual(count_lonlat_crossings(open_pairs), 0)
                 self.assertEqual(count_lonlat_crossings(closed_pairs), 0)
+
+            scan = export_and_scan_kml(pairs)
+            self.assertGreaterEqual(scan["ring_count"], 1)
+            self.assertEqual(scan["empty_rings"], 0)
+            self.assertEqual(scan["crossed_rings"], 0)
+            for ring in scan["rings"]:
+                self.assertEqual(ring["crossings"], 0)
+                self.assertGreaterEqual(ring["vertex_count"], 3)
+
+            diagnostics = inspect_kml_polygons(
+                [compact_mevcut_ced_polygon(pairs)]
+            )
+            self.assertNotIn(
+                KML_RING_STILL_CROSSED,
+                reason_codes(diagnostics),
+            )
+
+    def test_leftover_drain_does_not_reexport_crossed_compact_ring(self):
+        """Force-split remainders that still cross must be finished, not dropped.
+
+        The old leftover drain queued still-crossing parts onto a throwaway
+        list, then re-exported the original ~95-vertex ring.
+        """
+
+        pairs = compact_leftover_multi_cross_pairs()
+        parts = _force_split_lonlat_pairs(pairs, 1e-12)
+        self.assertIsNotNone(parts)
+        self.assertTrue(
+            all(count_lonlat_crossings(part) for part in parts)
+        )
+
+        repaired = []
+        _resolve_lonlat_leftover(
+            pairs,
+            repaired,
+            [],
+            {tuple(pairs)},
+            1e-12,
+        )
+        self.assertGreaterEqual(len(repaired), 1)
+        for ring in repaired:
+            self.assertEqual(count_lonlat_crossings(ring), 0)
+            self.assertGreaterEqual(len(ring), 3)
+
+        for ring in repair_lonlat_rings(pairs):
+            self.assertEqual(count_lonlat_crossings(ring), 0)
 
 
 class GroupingTypingClassTests(unittest.TestCase):

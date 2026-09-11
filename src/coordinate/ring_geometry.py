@@ -13,7 +13,8 @@ Repair policy
    may become several simple parts.
 4. KML lon/lat repair must not export leftover multi-cross rings on compact
    degree-scale polygons (span ≪ 0.01°). Still-crossing remainders are
-   force-split or replaced by a simple hull.
+   force-split or replaced by a simple hull. A still-crossing original
+   ring is never the KML output.
 
 ``repair_self_intersecting_ring`` is the single-ring helper used by tests:
 it returns the iteratively uncrossed ring when that ring is simple, otherwise
@@ -355,24 +356,26 @@ def repair_lonlat_rings(pairs, tolerance=1e-12):
             )
 
     for current in pending:
-        if count_lonlat_crossings(current, tolerance) == 0:
-            repaired.append(current)
-            continue
         _resolve_lonlat_leftover(
             current,
             repaired,
-            [],
+            None,
             seen,
             tolerance,
         )
 
-    if repaired:
-        return repaired
+    simple = [
+        ring
+        for ring in repaired
+        if count_lonlat_crossings(ring, tolerance) == 0
+    ]
+    if simple:
+        return simple
 
     hull = _convex_hull_pairs(pairs)
     if hull and count_lonlat_crossings(hull, tolerance) == 0:
         return [hull]
-    return [list(pairs)]
+    return []
 
 
 def count_lonlat_crossings(pairs, tolerance=1e-12):
@@ -393,29 +396,53 @@ def _resolve_lonlat_leftover(
     pending,
     seen,
     tolerance,
+    depth=0,
 ):
-    """Do not export a still-crossing compact leftover ring."""
+    """Finish a leftover ring: simple parts or a simple hull, never kelebek.
+
+    Still-crossing split parts are resolved recursively instead of being
+    parked on a throwaway queue. That queue used to be discarded at the
+    end of ``repair_lonlat_rings``, which re-exported the original compact
+    ring (~95 vertices, a handful of leftover crossings) in KML.
+    """
 
     if count_lonlat_crossings(current, tolerance) == 0:
         repaired.append(current)
         return
 
+    state = tuple(current)
+    if depth > 0:
+        if state in seen:
+            _append_simple_hull(current, repaired, tolerance)
+            return
+        seen.add(state)
+
+    if depth >= MAX_SPLIT_DEPTH:
+        _append_simple_hull(current, repaired, tolerance)
+        return
+
     parts = _force_split_lonlat_pairs(current, tolerance)
     if parts:
-        queued = False
+        progressed = False
         for part in parts:
-            state = tuple(part)
-            if count_lonlat_crossings(part, tolerance) == 0:
-                repaired.append(part)
-                queued = True
+            if tuple(part) == state:
                 continue
-            if state in seen:
-                continue
-            pending.append(part)
-            queued = True
-        if queued:
+            progressed = True
+            _resolve_lonlat_leftover(
+                part,
+                repaired,
+                pending,
+                seen,
+                tolerance,
+                depth + 1,
+            )
+        if progressed:
             return
 
+    _append_simple_hull(current, repaired, tolerance)
+
+
+def _append_simple_hull(current, repaired, tolerance):
     hull = _convex_hull_pairs(current)
     if hull and count_lonlat_crossings(hull, tolerance) == 0:
         repaired.append(hull)

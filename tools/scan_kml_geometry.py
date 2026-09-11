@@ -31,13 +31,19 @@ def _pairs_from_text(text):
             pairs.append((float(parts[0]), float(parts[1])))
         except ValueError:
             continue
-    if (
-        len(pairs) >= 2
-        and pairs[0][0] == pairs[-1][0]
-        and pairs[0][1] == pairs[-1][1]
-    ):
-        pairs = pairs[:-1]
     return pairs
+
+
+def _open_and_closed_pairs(pairs):
+    closed = list(pairs)
+    opened = list(pairs)
+    if (
+        len(opened) >= 2
+        and opened[0][0] == opened[-1][0]
+        and opened[0][1] == opened[-1][1]
+    ):
+        opened = opened[:-1]
+    return opened, closed
 
 
 def scan_kml_file(path):
@@ -45,11 +51,18 @@ def scan_kml_file(path):
     root = tree.getroot()
     rings = []
     for coordinates in root.findall(".//kml:coordinates", KML_NS):
-        pairs = _pairs_from_text(coordinates.text)
+        raw_pairs = _pairs_from_text(coordinates.text)
+        opened, closed = _open_and_closed_pairs(raw_pairs)
+        crossings = 0
+        if opened:
+            crossings = max(
+                count_lonlat_crossings(opened),
+                count_lonlat_crossings(closed),
+            )
         rings.append(
             {
-                "vertex_count": len(pairs),
-                "crossings": count_lonlat_crossings(pairs) if pairs else 0,
+                "vertex_count": len(opened),
+                "crossings": crossings,
             }
         )
     return {
