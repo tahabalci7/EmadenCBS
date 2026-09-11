@@ -721,32 +721,20 @@ class KMLExporter:
         cls,
         project_model,
     ):
+        from src.project.project_info_extractor import (
+            ProjectInfoExtractor,
+        )
+
         project_info = getattr(
             project_model,
             "project_info",
             {},
         )
 
-        company = project_info.get(
-            "company",
-            "eMadenCBS Projesi",
+        return ProjectInfoExtractor.build_project_export_name(
+            project_info,
+            default="eMadenCBS Projesi",
         )
-
-        license_no = project_info.get(
-            "license_no",
-            "",
-        )
-
-        name_parts = []
-
-        if company and company != "Bilinmiyor":
-            name_parts.append(company)
-
-        if license_no and license_no != "Bilinmiyor":
-            name_parts.append(license_no)
-
-        if not name_parts:
-            return "eMadenCBS Projesi"
 
     @classmethod
     def _tag(

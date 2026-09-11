@@ -3,6 +3,7 @@ import re
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.table_detector import TableDetector
+from src.coordinate.table_index import TableIndexLocator
 from src.ocr.ocr_engine import OCREngine
 
 
@@ -10,6 +11,7 @@ class PDFTextExtractionService:
     """UI'dan bağımsız ortak PDF metin çıkarma politikası."""
 
     FAST_SCAN_MAX_PAGES = 150
+    INDEX_PAGE_MIN_CHARS = 80
     MAX_STRONG_TARGETS = 12
     STRONG_TARGET_SCORE = 70
     TARGET_NEIGHBORHOOD = range(-1, 4)
@@ -98,6 +100,13 @@ class PDFTextExtractionService:
         pre_fallback_result = None
 
         try:
+            index_result = cls._extract_index_guided(
+                pdf_path,
+                defer_heavy_fallback_if_useful,
+            )
+            if index_result is not None:
+                return index_result
+
             fast_result = OCREngine.extract_text_layer(
                 pdf_path,
                 max_pages=cls.FAST_SCAN_MAX_PAGES,
@@ -320,6 +329,115 @@ class PDFTextExtractionService:
             )
 
     @classmethod
+    def _extract_index_guided(
+        cls,
+        pdf_path,
+        defer_heavy_fallback_if_useful,
+    ):
+        plan = TableIndexLocator.plan(pdf_path)
+        target_pages = plan.get("target_pages") or []
+        if not target_pages:
+            return None
+
+        text_result = OCREngine.extract_text_layer_pages(
+            pdf_path,
+            target_pages,
+        )
+        combined_text = text_result.get("text", "") or ""
+        extracted = set(
+            text_result.get("extracted_page_numbers") or []
+        )
+        requested = (
+            text_result.get("requested_page_numbers")
+            or target_pages
+        )
+        page_chars = cls._page_char_counts(combined_text)
+        thin_pages = {
+            page_number
+            for page_number in requested
+            if page_number not in extracted
+        }
+        if page_chars:
+            thin_pages.update(
+                page_number
+                for page_number in extracted
+                if page_chars.get(page_number, 0)
+                < cls.INDEX_PAGE_MIN_CHARS
+            )
+        thin_pages = sorted(thin_pages)
+
+        ocr_pages = []
+        if thin_pages:
+            ocr_result = OCREngine.extract_selected_pages(
+                pdf_path,
+                thin_pages,
+            )
+            ocr_text = ocr_result.get("text", "") or ""
+            if ocr_text.strip():
+                combined_text = (
+                    combined_text
+                    + "\n"
+                    + ocr_text
+                )
+                ocr_pages = thin_pages
+
+        quality = cls._measure_text_quality(combined_text)
+        decorated = cls._decorate_result(
+            text_result,
+            text=combined_text,
+            method=(
+                "PDF Metin Katmanı (Tablo Dizini)"
+                if not ocr_pages
+                else "PDF Metin Katmanı + Dizin Sayfası OCR"
+            ),
+            strategy=(
+                "index_text_layer"
+                if not ocr_pages
+                else "index_text_layer_ocr"
+            ),
+            ocr_page_numbers=sorted(set(ocr_pages)),
+            ocr_attempted_page_numbers=sorted(
+                set(ocr_pages)
+            ),
+            ocr_pages=len(set(ocr_pages)),
+            candidate_page_scores={},
+            full_document_ocr=False,
+            index_target_pages=target_pages,
+            index_found=bool(plan.get("index_found")),
+        )
+
+        if quality["has_required_polygons"]:
+            return cls._finalize_without_fallback(
+                decorated
+            )
+
+        if (
+            defer_heavy_fallback_if_useful
+            and quality["has_useful_result"]
+        ):
+            return cls._defer_heavy_fallback(
+                decorated,
+                reason="index_guided_usable",
+            )
+
+        return None
+
+    @classmethod
+    def _page_char_counts(cls, text):
+        matches = list(cls.PAGE_PATTERN.finditer(text))
+        counts = {}
+        for index, match in enumerate(matches):
+            page_number = int(match.group(1))
+            start = match.end()
+            end = (
+                matches[index + 1].start()
+                if index + 1 < len(matches)
+                else len(text)
+            )
+            counts[page_number] = len(text[start:end].strip())
+        return counts
+
+    @classmethod
     def _has_required_polygons(cls, text):
         if not text.strip():
             return False
@@ -344,6 +462,31 @@ class PDFTextExtractionService:
         )
 
         return has_license and has_ced_or_project
+
+    @staticmethod
+    def _has_dense_text_layer(result):
+        scanned_pages = int(
+            result.get("scanned_pages", 0) or 0
+        )
+        text_layer_pages = int(
+            result.get("text_layer_pages", 0) or 0
+        )
+        text = result.get("text", "") or ""
+
+        if scanned_pages < 1:
+            return False
+
+        if text_layer_pages < max(
+            1,
+            int(scanned_pages * 0.8),
+        ):
+            return False
+
+        if len(text) < 4000:
+            return False
+
+        average_chars = len(text) / text_layer_pages
+        return average_chars >= 250
 
     @classmethod
     def _target_groups(cls, text):

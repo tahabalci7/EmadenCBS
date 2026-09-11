@@ -1,5 +1,4 @@
 import os
-import re
 import time
 
 from PySide6.QtWidgets import (
@@ -184,7 +183,8 @@ class MainWindow(QMainWindow):
         step_start = time.perf_counter()
 
         ocr_result = PDFTextExtractionService.extract(
-            self.current_pdf
+            self.current_pdf,
+            defer_heavy_fallback_if_useful=True,
         )
 
         raw_text = ocr_result.get(
@@ -693,43 +693,10 @@ class MainWindow(QMainWindow):
             {},
         )
 
-        company = project_info.get(
-            "company",
-            "Proje",
+        file_name = ProjectInfoExtractor.build_export_filename(
+            project_info,
+            default="Proje",
         )
-
-        license_no = project_info.get(
-            "license_no",
-            "",
-        )
-
-        file_name_parts = [
-            company,
-        ]
-
-        if (
-            license_no
-            and license_no != "Bilinmiyor"
-        ):
-            file_name_parts.append(
-                license_no
-            )
-
-        file_name = "_".join(
-            file_name_parts
-        )
-
-        file_name = re.sub(
-            r'[<>:"/\\|?*]',
-            "_",
-            file_name,
-        )
-
-        file_name = re.sub(
-            r"\s+",
-            "_",
-            file_name,
-        ).strip("._ ")
 
         file_path = os.path.join(
             export_directory,

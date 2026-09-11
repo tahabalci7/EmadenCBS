@@ -143,6 +143,63 @@ class OCREngine:
                 - len(extracted_parts)
             ),
         }
+
+    @classmethod
+    def extract_text_layer_pages(
+        cls,
+        pdf_path,
+        page_numbers,
+    ):
+        page_numbers = sorted(
+            {
+                int(page_number)
+                for page_number in page_numbers
+                if int(page_number) >= 1
+            }
+        )
+        doc = fitz.open(pdf_path)
+        page_count = len(doc)
+        extracted_parts = []
+        extracted_pages = []
+        try:
+            for page_number in page_numbers:
+                if page_number > page_count:
+                    continue
+                page_text = doc[page_number - 1].get_text() or ""
+                if not page_text.strip():
+                    continue
+                extracted_pages.append(page_number)
+                extracted_parts.append(
+                    cls._format_page_text(
+                        page_number,
+                        page_text,
+                        "PDF METİN KATMANI",
+                    )
+                )
+        finally:
+            doc.close()
+
+        extracted_text = "\n".join(extracted_parts)
+        requested = [
+            page_number
+            for page_number in page_numbers
+            if page_number <= page_count
+        ]
+        return {
+            "success": bool(extracted_text.strip()),
+            "method": "PDF Metin Katmanı",
+            "text": extracted_text,
+            "page_count": page_count,
+            "scanned_pages": len(requested),
+            "text_layer_pages": len(extracted_parts),
+            "ocr_pages": 0,
+            "failed_pages": (
+                len(requested) - len(extracted_parts)
+            ),
+            "extracted_page_numbers": extracted_pages,
+            "requested_page_numbers": requested,
+        }
+
     @classmethod
     def extract_text(
         cls,

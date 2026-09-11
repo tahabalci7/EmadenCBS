@@ -63,6 +63,8 @@ class CoordinateEngine:
         results = []
         seen = set()
         observation_records = []
+        previous_table_type = None
+        previous_section = None
 
         for table_index, table in enumerate(
             tables,
@@ -75,6 +77,38 @@ class CoordinateEngine:
             table_type = TableClassifier.classify(
                 table
             )
+
+            if TableClassifier._is_headerless_continuation(
+                table
+            ):
+                if (
+                    table_type == "DIGER"
+                    and previous_table_type
+                ):
+                    table_type = previous_table_type
+
+                if (
+                    previous_section
+                    and (
+                        section == "Bilinmeyen Alan"
+                        or TableClassifier._looks_like_context_noise_line(
+                            section
+                        )
+                    )
+                ):
+                    section = previous_section
+
+            if table_type != "DIGER":
+                previous_table_type = table_type
+
+            if (
+                section
+                and section != "Bilinmeyen Alan"
+                and not TableClassifier._looks_like_context_noise_line(
+                    section
+                )
+            ):
+                previous_section = section
 
             datum_info = DatumDetector.detect(
                 table
@@ -1039,6 +1073,11 @@ class CoordinateEngine:
         table_text,
     ):
         for line in table_text.splitlines()[:20]:
+            if TableClassifier._looks_like_context_noise_line(
+                line
+            ):
+                continue
+
             upper = line.upper()
 
             if "PROJEYE KONU ALAN" in upper:

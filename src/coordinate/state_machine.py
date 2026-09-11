@@ -1,5 +1,7 @@
 import re
 
+from src.coordinate.table_classifier import TableClassifier
+
 
 LABEL_PATTERN = re.compile(
     r"^[A-ZÇĞİÖŞÜ0-9_.-]+$",
@@ -9,6 +11,19 @@ LABEL_PATTERN = re.compile(
 NUMERIC_LABEL_PATTERN = re.compile(
     r"^\d+$"
 )
+
+COMBINED_GEOGRAPHIC_PATTERN = re.compile(
+    r"^([+-]?\d+(?:[.,]\d+)?)"
+    r"\s*:\s*"
+    r"([+-]?\d+(?:[.,]\d+)?)$"
+)
+
+
+def is_ignorable_table_context_line(line) -> bool:
+    """Page markers, running headers, and CRS metadata are not headings."""
+    return TableClassifier._looks_like_context_noise_line(
+        line
+    )
 
 
 def is_number(value: str) -> bool:
@@ -32,6 +47,20 @@ def to_float(value: str) -> float:
     )
 
 
+def parse_combined_geographic(value: str):
+    match = COMBINED_GEOGRAPHIC_PATTERN.fullmatch(
+        value.strip()
+    )
+
+    if match is None:
+        return None
+
+    return (
+        to_float(match.group(1)),
+        to_float(match.group(2)),
+    )
+
+
 def is_label(
     value: str,
     allow_numeric_labels: bool,
@@ -45,17 +74,37 @@ def is_label(
         allow_numeric_labels
         and NUMERIC_LABEL_PATTERN.match(value)
     ):
+        number = to_float(value)
+        if is_utm_easting(number) or is_utm_northing(number):
+            return False
         return True
 
     if not LABEL_PATTERN.match(value):
         return False
 
-    # Sadece sıradan bir sayıysa ve sayısal
-    # etiketlere izin verilmiyorsa etiket değildir.
     if is_number(value):
+        number = to_float(value)
+        if is_utm_easting(number) or is_utm_northing(number):
+            return False
+        if 25 <= number <= 46:
+            return False
+        if allow_numeric_labels and number < 1000:
+            return True
         return False
 
     return True
+
+
+def is_utm_easting(value) -> bool:
+    return 100000 <= value <= 999999
+
+
+def is_utm_northing(value) -> bool:
+    return 3000000 <= value <= 5000000
+
+
+def is_valid_utm_pair(utm_y, utm_x) -> bool:
+    return is_utm_easting(utm_y) and is_utm_northing(utm_x)
 
 
 def is_valid_coordinate_block(
@@ -65,10 +114,498 @@ def is_valid_coordinate_block(
     longitude,
 ) -> bool:
     return (
-        100000 <= utm_y <= 999999
-        and 3000000 <= utm_x <= 5000000
+        is_valid_utm_pair(utm_y, utm_x)
         and 35 <= latitude <= 43
         and 25 <= longitude <= 46
+    )
+
+
+def order_utm(first, second):
+    if is_utm_easting(first) and is_utm_northing(second):
+        return first, second
+
+    if is_utm_northing(first) and is_utm_easting(second):
+        return second, first
+
+    return None
+
+
+def _numeric_line_value(line: str):
+    text = (
+        str(line)
+        .strip()
+        .strip(":")
+        .strip()
+    )
+    if not text or not is_number(text):
+        return None
+    return to_float(text)
+
+
+def parse_utm_pair(lines, start):
+    if start >= len(lines):
+        return None
+
+    combined = parse_combined_geographic(lines[start])
+    if combined is not None:
+        ordered = order_utm(combined[0], combined[1])
+        if ordered is not None:
+            return ordered[0], ordered[1], start + 1
+
+    first = _numeric_line_value(lines[start])
+    if first is None:
+        return None
+
+    pos = start + 1
+    if pos < len(lines) and lines[pos].strip() == ":":
+        pos += 1
+    if pos >= len(lines):
+        return None
+
+    second = _numeric_line_value(lines[pos])
+    if second is None:
+        return None
+
+    ordered = order_utm(first, second)
+    if ordered is None:
+        return None
+
+    return ordered[0], ordered[1], pos + 1
+
+
+def parse_geographic_pair(lines, start, utm_y, utm_x):
+    if start >= len(lines):
+        return None
+
+    combined = parse_combined_geographic(lines[start])
+    if combined is not None:
+        latitude, longitude = order_geographic(
+            utm_y,
+            utm_x,
+            combined[0],
+            combined[1],
+        )
+        if is_valid_coordinate_block(
+            utm_y,
+            utm_x,
+            latitude,
+            longitude,
+        ):
+            return latitude, longitude, start + 1
+
+    first = _numeric_line_value(lines[start])
+    if first is None:
+        return None
+
+    pos = start + 1
+    if pos < len(lines) and lines[pos].strip() == ":":
+        pos += 1
+    if pos >= len(lines):
+        return None
+
+    second = _numeric_line_value(lines[pos])
+    if second is None:
+        return None
+
+    latitude, longitude = order_geographic(
+        utm_y,
+        utm_x,
+        first,
+        second,
+    )
+    if not is_valid_coordinate_block(
+        utm_y,
+        utm_x,
+        latitude,
+        longitude,
+    ):
+        return None
+
+    return latitude, longitude, pos + 1
+
+
+def parse_unlabeled_utm_geo_runs(lines, start):
+    if start < len(lines) and is_label(lines[start], False):
+        return None
+
+    utm_pairs = []
+    pos = start
+
+    while pos < len(lines):
+        if is_label(lines[pos], False):
+            break
+
+        parsed = parse_utm_pair(lines, pos)
+        if parsed is None:
+            break
+
+        utm_y, utm_x, next_pos = parsed
+        utm_pairs.append((utm_y, utm_x))
+        pos = next_pos
+
+    if len(utm_pairs) < 3:
+        return None
+
+    geo_pairs = []
+    geo_pos = pos
+    while geo_pos < len(lines):
+        combined = parse_combined_geographic(lines[geo_pos])
+        if combined is not None:
+            if order_utm(combined[0], combined[1]) is not None:
+                break
+            geo_pairs.append(combined)
+            geo_pos += 1
+            continue
+
+        geographic = parse_geographic_pair(
+            lines,
+            geo_pos,
+            utm_pairs[0][0],
+            utm_pairs[0][1],
+        )
+        if geographic is None:
+            break
+
+        latitude, longitude, next_pos = geographic
+        geo_pairs.append((latitude, longitude))
+        geo_pos = next_pos
+
+    points = []
+    if len(geo_pairs) == len(utm_pairs):
+        for utm_pair, geo_pair in zip(utm_pairs, geo_pairs):
+            latitude, longitude = order_geographic(
+                utm_pair[0],
+                utm_pair[1],
+                geo_pair[0],
+                geo_pair[1],
+            )
+            if not is_valid_coordinate_block(
+                utm_pair[0],
+                utm_pair[1],
+                latitude,
+                longitude,
+            ):
+                geo_pairs = []
+                points = []
+                break
+            points.append(
+                (
+                    utm_pair[0],
+                    utm_pair[1],
+                    latitude,
+                    longitude,
+                )
+            )
+
+    if not points:
+        for utm_y, utm_x in utm_pairs:
+            points.append(
+                (
+                    utm_y,
+                    utm_x,
+                    None,
+                    None,
+                )
+            )
+        geo_pos = pos
+
+    return {
+        "points": points,
+        "consumed": geo_pos - start,
+    }
+
+
+def parse_point_at(lines, start, allow_numeric_labels):
+    if start >= len(lines):
+        return None
+
+    label = None
+    pos = start
+    if is_label(lines[start], allow_numeric_labels):
+        label = lines[start].strip()
+        pos = start + 1
+
+    utm_pair = parse_utm_pair(lines, pos)
+    if utm_pair is None:
+        return None
+
+    utm_y, utm_x, pos = utm_pair
+    if (
+        pos < len(lines)
+        and is_label(lines[pos], True)
+        and parse_geographic_pair(
+            lines,
+            pos + 1,
+            utm_y,
+            utm_x,
+        )
+        is not None
+    ):
+        if label is None:
+            label = lines[pos].strip()
+        pos += 1
+
+    geographic = parse_geographic_pair(
+        lines,
+        pos,
+        utm_y,
+        utm_x,
+    )
+    if geographic is None:
+        if _looks_like_invalid_geographic_attempt(lines, pos, utm_y, utm_x):
+            return None
+
+        if label is None:
+            label = ""
+
+        return {
+            "label": label,
+            "utm_y": utm_y,
+            "utm_x": utm_x,
+            "latitude": None,
+            "longitude": None,
+            "consumed": pos - start,
+        }
+
+    latitude, longitude, end = geographic
+    if label is None:
+        label = ""
+
+    return {
+        "label": label,
+        "utm_y": utm_y,
+        "utm_x": utm_x,
+        "latitude": latitude,
+        "longitude": longitude,
+        "consumed": end - start,
+    }
+
+
+def _looks_like_column_header(line):
+    normalized = TableClassifier._normalize(line)
+
+    if normalized in {
+        "Y",
+        "X",
+        "Z",
+        "E",
+        "N",
+        "ENLEM",
+        "BOYLAM",
+        "SAGA",
+        "YUKARI",
+        "NOKTA",
+        "NOKTA NO",
+        "NOKTA NO.",
+        "SR",
+        "SIRA",
+        "SIRA NO",
+        "SIRA N",
+        "UTM",
+        "DATUM",
+    }:
+        return True
+
+    return normalized.startswith("NOKTA")
+
+
+def parse_column_major_coordinates(
+    lines,
+    allow_numeric_labels,
+):
+    """
+    PDF text-layer dumps of coordinate tables sometimes emit
+    whole columns instead of rows: labels, then all Y, then all X,
+    optionally all latitudes and longitudes.
+    """
+
+    labels = []
+    kinds = []
+
+    for line in lines:
+        if is_ignorable_table_context_line(line):
+            continue
+
+        combined = parse_combined_geographic(line)
+        if combined is not None:
+            if order_utm(combined[0], combined[1]) is not None:
+                return None
+
+            kinds.append(("LAT", combined[0]))
+            kinds.append(("LON", combined[1]))
+            continue
+
+        number = _numeric_line_value(line)
+        if number is not None:
+            if is_utm_easting(number):
+                kinds.append(("Y", number))
+            elif is_utm_northing(number):
+                kinds.append(("X", number))
+            elif 35 <= number <= 43:
+                kinds.append(("LAT", number))
+            elif 25 <= number <= 46:
+                kinds.append(("LON", number))
+            continue
+
+        stripped = line.strip()
+        if _looks_like_column_header(stripped):
+            continue
+
+        if is_label(stripped, allow_numeric_labels):
+            labels.append(stripped)
+
+    if len(kinds) < 6:
+        return None
+
+    kind_seq = [kind for kind, _ in kinds]
+    values = [value for _, value in kinds]
+    max_n = len(kinds) // 2
+
+    for n in range(max_n, 2, -1):
+        yx = ["Y"] * n + ["X"] * n
+        xy = ["X"] * n + ["Y"] * n
+        geo_orders = (
+            [],
+            ["LAT"] * n + ["LON"] * n,
+            ["LON"] * n + ["LAT"] * n,
+        )
+
+        for start in range(0, len(kind_seq) - 2 * n + 1):
+            prefix = kind_seq[start:start + 2 * n]
+            if prefix not in (yx, xy):
+                continue
+
+            for geo in geo_orders:
+                end = start + 2 * n + len(geo)
+                if kind_seq[start:end] != prefix + geo:
+                    continue
+                if geo and end < len(kind_seq) and kind_seq[end] in geo[:1]:
+                    continue
+
+                window = list(
+                    zip(
+                        kind_seq[start:end],
+                        values[start:end],
+                    )
+                )
+                y_vals = [value for kind, value in window if kind == "Y"]
+                x_vals = [value for kind, value in window if kind == "X"]
+                lat_vals = [
+                    value for kind, value in window if kind == "LAT"
+                ]
+                lon_vals = [
+                    value for kind, value in window if kind == "LON"
+                ]
+                has_geo = len(lat_vals) == n and len(lon_vals) == n
+                point_labels = (
+                    labels[-n:]
+                    if len(labels) >= n
+                    else []
+                )
+
+                points = []
+                for index in range(n):
+                    latitude = None
+                    longitude = None
+                    if has_geo:
+                        latitude, longitude = order_geographic(
+                            y_vals[index],
+                            x_vals[index],
+                            lat_vals[index],
+                            lon_vals[index],
+                        )
+
+                    if index < len(point_labels):
+                        label = point_labels[index]
+                    else:
+                        label = f"P{index + 1}"
+
+                    points.append(
+                        {
+                            "label": label,
+                            "utm_y": y_vals[index],
+                            "utm_x": x_vals[index],
+                            "latitude": latitude,
+                            "longitude": longitude,
+                        }
+                    )
+
+                return points
+
+    return None
+
+
+def order_geographic(utm_y, utm_x, first, second):
+    if is_valid_coordinate_block(
+        utm_y,
+        utm_x,
+        first,
+        second,
+    ):
+        return first, second
+
+    if is_valid_coordinate_block(
+        utm_y,
+        utm_x,
+        second,
+        first,
+    ):
+        return second, first
+
+    return first, second
+
+
+def _looks_like_invalid_geographic_attempt(lines, start, utm_y, utm_x):
+    """True when a numeric pair is present but is not valid lat/lon or UTM."""
+
+    if start >= len(lines):
+        return False
+
+    combined = parse_combined_geographic(lines[start])
+    if combined is not None:
+        if order_utm(combined[0], combined[1]) is not None:
+            return False
+        latitude, longitude = order_geographic(
+            utm_y,
+            utm_x,
+            combined[0],
+            combined[1],
+        )
+        return not is_valid_coordinate_block(
+            utm_y,
+            utm_x,
+            latitude,
+            longitude,
+        )
+
+    first = _numeric_line_value(lines[start])
+    if first is None:
+        return False
+
+    pos = start + 1
+    if pos < len(lines) and lines[pos].strip() == ":":
+        pos += 1
+    if pos >= len(lines):
+        return False
+
+    second = _numeric_line_value(lines[pos])
+    if second is None:
+        return False
+
+    if order_utm(first, second) is not None:
+        return False
+
+    latitude, longitude = order_geographic(
+        utm_y,
+        utm_x,
+        first,
+        second,
+    )
+    return not is_valid_coordinate_block(
+        utm_y,
+        utm_x,
+        latitude,
+        longitude,
     )
 
 
@@ -288,6 +825,65 @@ def _find_coordinate_sequence(tokens):
                         "longitude": longitude,
                     }
 
+    for x_start, utm_x in enumerate(
+        direct_values
+    ):
+        if (
+            utm_x is None
+            or not 3000000 <= utm_x <= 5000000
+        ):
+            continue
+
+        for y_start in range(
+            x_start + 1,
+            min(x_start + 4, token_count),
+        ):
+            utm_y = direct_values[y_start]
+
+            if (
+                utm_y is None
+                or not 100000 <= utm_y <= 999999
+            ):
+                continue
+
+            after_utm = y_start + 1
+
+            for lat_start in range(
+                after_utm,
+                token_count,
+            ):
+                latitude = direct_values[
+                    lat_start
+                ]
+
+                if (
+                    latitude is None
+                    or not 35 <= latitude <= 43
+                ):
+                    continue
+
+                for lon_start in range(
+                    lat_start + 1,
+                    token_count,
+                ):
+                    longitude = direct_values[
+                        lon_start
+                    ]
+
+                    if (
+                        longitude is None
+                        or not 25 <= longitude <= 46
+                    ):
+                        continue
+
+                    return {
+                        "label_end": x_start,
+                        "utm_y": utm_y,
+                        "utm_x": utm_x,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    }
+
     for y_start in range(token_count):
         for y_end, utm_y in _join_numeric_fragments(
             tokens,
@@ -358,6 +954,64 @@ def _find_coordinate_sequence(tokens):
                                         "latitude": latitude,
                                         "longitude": longitude,
                                     }
+
+    for y_start, utm_y in enumerate(
+        direct_values
+    ):
+        if (
+            utm_y is None
+            or not 100000 <= utm_y <= 999999
+        ):
+            continue
+
+        for x_start in range(
+            y_start + 1,
+            min(y_start + 4, token_count),
+        ):
+            utm_x = direct_values[x_start]
+
+            if (
+                utm_x is None
+                or not 3000000 <= utm_x <= 5000000
+            ):
+                continue
+
+            return {
+                "label_end": y_start,
+                "utm_y": utm_y,
+                "utm_x": utm_x,
+                "latitude": None,
+                "longitude": None,
+            }
+
+    for x_start, utm_x in enumerate(
+        direct_values
+    ):
+        if (
+            utm_x is None
+            or not 3000000 <= utm_x <= 5000000
+        ):
+            continue
+
+        for y_start in range(
+            x_start + 1,
+            min(x_start + 4, token_count),
+        ):
+            utm_y = direct_values[y_start]
+
+            if (
+                utm_y is None
+                or not 100000 <= utm_y <= 999999
+            ):
+                continue
+
+            return {
+                "label_end": x_start,
+                "utm_y": utm_y,
+                "utm_x": utm_x,
+                "latitude": None,
+                "longitude": None,
+            }
 
     return None
 
@@ -637,6 +1291,20 @@ def normalize_ocr_label(label: str) -> str:
     return "_".join(parts)
 
 
+def _expand_combined_tokens(tokens):
+    expanded = []
+
+    for token in tokens:
+        combined = parse_combined_geographic(token)
+        if combined is not None:
+            expanded.append(str(combined[0]))
+            expanded.append(str(combined[1]))
+        else:
+            expanded.append(token)
+
+    return expanded
+
+
 def parse_row_coordinate(
     line: str,
     allow_numeric_labels: bool,
@@ -649,13 +1317,15 @@ def parse_row_coordinate(
         [ETİKET] [UTM-Y] [UTM-X] [opsiyonel tekrar etiket] [LAT] [LON]
     """
 
-    tokens = [
-        token.strip()
-        for token in line.split()
-        if token.strip()
-    ]
+    tokens = _expand_combined_tokens(
+        [
+            token.strip()
+            for token in line.split()
+            if token.strip()
+        ]
+    )
 
-    if len(tokens) < 4:
+    if len(tokens) < 3:
         return None
 
     sequence = _find_coordinate_sequence(
@@ -688,7 +1358,10 @@ def parse_row_coordinate(
     latitude = sequence["latitude"]
     longitude = sequence["longitude"]
 
-    if not is_valid_coordinate_block(
+    if latitude is None or longitude is None:
+        if not is_valid_utm_pair(utm_y, utm_x):
+            return None
+    elif not is_valid_coordinate_block(
         utm_y,
         utm_x,
         latitude,
@@ -763,6 +1436,9 @@ def parse_coordinate_blocks(
     allow_numeric_labels = (
         "KOORDİNAT" in upper_text
         or "KOORDINAT" in upper_text
+        or "UTM" in upper_text
+        or "SAĞA" in upper_text
+        or "SAGA" in upper_text
     )
 
     # =========================================================
@@ -781,10 +1457,9 @@ def parse_coordinate_blocks(
         )
 
         patterns = [
-            r"^\s*(\d+)\s+NOLU\s+POLIGON\b",
-            r"^\s*(\d+)\s+NO(?:LU)?\s+POLIGON\b",
-            r"\b(\d+)\s*[.)\-:]?\s*POLIGON\b",
-            r"^\s*POLIGON\s*[-.:]?\s*(\d+)\b",
+            r"^\s*(\d+)\s+NO\.?\s*LU\s+(.+)$",
+            r"^\s*(\d+)\s+NOLU\s+(.+)$",
+            r"^\s*POLIGON\s*[-.:]?\s*(\d+)\b(.*)$",
         ]
 
         for pattern in patterns:
@@ -795,13 +1470,76 @@ def parse_coordinate_blocks(
 
             if match:
                 number = match.group(1)
+                rest = re.sub(
+                    r"[^A-Z0-9]+",
+                    "_",
+                    match.group(2),
+                ).strip("_")[:32]
+
+                group_name = f"POLIGON_{number}"
+                if rest:
+                    group_name = f"{group_name}_{rest}"
 
                 return (
-                    f"POLIGON_{number}",
+                    group_name,
                     line.strip(),
                 )
 
         return None
+
+    def detect_generic_area_heading(line):
+        value = str(line).strip()
+
+        if len(value) < 8 or len(value) > 90:
+            return None
+
+        normalized = (
+            value.upper()
+            .replace("İ", "I")
+            .replace("Ş", "S")
+            .replace("Ğ", "G")
+            .replace("Ü", "U")
+            .replace("Ö", "O")
+            .replace("Ç", "C")
+        )
+
+        if not re.search(
+            r"\b(ALANI|SAHASI|BANDI|TESISI|BACALARI|POLIGONU)\b",
+            normalized,
+        ):
+            return None
+
+        if re.search(
+            r"\b(SEKIL|TABLO|CIZELGE|KOORDINAT SIRASI|RAPORU)\b",
+            normalized,
+        ):
+            return None
+
+        has_measure = re.search(
+            r"\(\s*[\d.,]+\s*(?:HA|M2|M)\)",
+            normalized,
+        )
+        has_nolu = re.search(
+            r"\b\d+\s+NO",
+            normalized,
+        )
+
+        if not has_measure and not has_nolu:
+            return None
+
+        slug = re.sub(
+            r"[^A-Z0-9]+",
+            "_",
+            normalized,
+        ).strip("_")[:48]
+
+        if not slug:
+            return None
+
+        return (
+            f"HEADING_{slug}",
+            value,
+        )
 
     # =========================================================
     # NOKTA ADINDAN FALLBACK GRUP TESPİTİ
@@ -952,6 +1690,10 @@ def parse_coordinate_blocks(
         return None
 
     for line_index, line in enumerate(lines):
+        if is_ignorable_table_context_line(line):
+            pending_area_heading_lines.clear()
+            continue
+
         point = parse_row_coordinate(
             line,
             allow_numeric_labels,
@@ -965,6 +1707,11 @@ def parse_coordinate_blocks(
         detected_group = detect_polygon_group(
             line
         )
+
+        if detected_group is None:
+            detected_group = detect_generic_area_heading(
+                line
+            )
 
         if detected_group is not None:
             pending_area_heading_lines.clear()
@@ -1135,9 +1882,15 @@ def parse_coordinate_blocks(
 
     current_polygon_group = "DEFAULT"
     current_polygon_heading = ""
+    current_area_type = None
+    unnamed_point_serial = 0
 
     while i < len(lines):
         line = lines[i]
+
+        if is_ignorable_table_context_line(line):
+            i += 1
+            continue
 
         # Satırlar ilerlerken alan türünü güncelle (ikinci yöntem için).
         detected_area_type = detect_area_type(
@@ -1156,6 +1909,11 @@ def parse_coordinate_blocks(
             line
         )
 
+        if detected_group is None:
+            detected_group = detect_generic_area_heading(
+                line
+            )
+
         if detected_group is not None:
             (
                 current_polygon_group,
@@ -1165,120 +1923,182 @@ def parse_coordinate_blocks(
             i += 1
             continue
 
-        if not is_label(
-            line,
-            allow_numeric_labels,
-        ):
-            i += 1
-            continue
-
-        block = lines[
-            i:i + 5
-        ]
-
-        if len(block) != 5:
-            i += 1
-            continue
-
-        if not all(
-            is_number(value)
-            for value in block[1:]
-        ):
-            i += 1
-            continue
-
-        utm_y = to_float(
-            block[1]
+        unlabeled_run = parse_unlabeled_utm_geo_runs(
+            lines,
+            i,
         )
-
-        utm_x = to_float(
-            block[2]
-        )
-
-        latitude = to_float(
-            block[3]
-        )
-
-        longitude = to_float(
-            block[4]
-        )
-
-        if not is_valid_coordinate_block(
-            utm_y,
-            utm_x,
-            latitude,
-            longitude,
-        ):
-            i += 1
-            continue
-
-        normalized_label = normalize_ocr_label(
-            block[0]
-        )
-
-        label_group = detect_group_from_label(
-            normalized_label
-        )
-
-        if current_polygon_group != "DEFAULT":
-            polygon_group = (
-                current_polygon_group
-            )
-
-            polygon_heading = (
-                current_polygon_heading
-            )
-
-        elif label_group:
-            polygon_group = (
-                label_group
-            )
-
-            polygon_heading = (
-                label_group
-            )
-
+        parsed_points = []
+        consumed = 0
+        if unlabeled_run is not None:
+            consumed = unlabeled_run["consumed"]
+            for utm_y, utm_x, latitude, longitude in unlabeled_run["points"]:
+                unnamed_point_serial += 1
+                parsed_points.append(
+                    {
+                        "label": f"P{unnamed_point_serial}",
+                        "utm_y": utm_y,
+                        "utm_x": utm_x,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    }
+                )
         else:
-            polygon_group = "DEFAULT"
-            polygon_heading = ""
+            parsed = parse_point_at(
+                lines,
+                i,
+                allow_numeric_labels,
+            )
+            if parsed is not None:
+                consumed = parsed["consumed"]
+                label = parsed["label"]
+                if not label:
+                    unnamed_point_serial += 1
+                    label = f"P{unnamed_point_serial}"
+                parsed_points.append(
+                    {
+                        "label": label,
+                        "utm_y": parsed["utm_y"],
+                        "utm_x": parsed["utm_x"],
+                        "latitude": parsed["latitude"],
+                        "longitude": parsed["longitude"],
+                    }
+                )
 
-        (
-            source_page,
-            source_method,
-        ) = get_line_source(
-            i + 1
-        )
+        if not parsed_points:
+            i += 1
+            continue
 
-        point = {
-            "label": normalized_label,
-            "utm_y": utm_y,
-            "utm_x": utm_x,
-            "latitude": latitude,
-            "longitude": longitude,
-            "polygon_group": polygon_group,
-            "polygon_heading": polygon_heading,
-            "table_type_override": current_area_type,
-            "source_page": source_page,
-            "source_method": source_method,
-        }
-
-        key = (
-            point["polygon_group"],
-            point["label"],
-            point["utm_y"],
-            point["utm_x"],
-        )
-
-        if key not in seen:
-            seen.add(
-                key
+        for parsed in parsed_points:
+            normalized_label = normalize_ocr_label(
+                parsed["label"]
+            )
+            label_group = detect_group_from_label(
+                normalized_label
             )
 
-            results.append(
-                point
+            if current_polygon_group != "DEFAULT":
+                polygon_group = (
+                    current_polygon_group
+                )
+                polygon_heading = (
+                    current_polygon_heading
+                )
+            elif label_group:
+                polygon_group = (
+                    label_group
+                )
+                polygon_heading = (
+                    label_group
+                )
+            else:
+                polygon_group = "DEFAULT"
+                polygon_heading = ""
+
+            (
+                source_page,
+                source_method,
+            ) = get_line_source(
+                i + 1
             )
 
-        i += 5
+            point = {
+                "label": normalized_label,
+                "utm_y": parsed["utm_y"],
+                "utm_x": parsed["utm_x"],
+                "latitude": parsed["latitude"],
+                "longitude": parsed["longitude"],
+                "polygon_group": polygon_group,
+                "polygon_heading": polygon_heading,
+                "table_type_override": current_area_type,
+                "source_page": source_page,
+                "source_method": source_method,
+            }
+
+            key = (
+                point["polygon_group"],
+                point["label"],
+                point["utm_y"],
+                point["utm_x"],
+            )
+
+            if key not in seen:
+                seen.add(
+                    key
+                )
+                results.append(
+                    point
+                )
+
+        i += consumed
+
+    if not results:
+        column_points = parse_column_major_coordinates(
+            lines,
+            allow_numeric_labels,
+        ) or []
+
+        current_polygon_group = "DEFAULT"
+        current_polygon_heading = ""
+        current_area_type = None
+
+        for line in lines:
+            if is_ignorable_table_context_line(line):
+                continue
+            detected_area_type = detect_area_type(line)
+            if detected_area_type is not None:
+                current_area_type = detected_area_type
+            detected_group = detect_polygon_group(line)
+            if detected_group is None:
+                detected_group = detect_generic_area_heading(line)
+            if detected_group is not None:
+                (
+                    current_polygon_group,
+                    current_polygon_heading,
+                ) = detected_group
+
+        for parsed in column_points:
+            normalized_label = normalize_ocr_label(
+                parsed["label"]
+            )
+            label_group = detect_group_from_label(
+                normalized_label
+            )
+
+            if current_polygon_group != "DEFAULT":
+                polygon_group = current_polygon_group
+                polygon_heading = current_polygon_heading
+            elif label_group:
+                polygon_group = label_group
+                polygon_heading = label_group
+            else:
+                polygon_group = "DEFAULT"
+                polygon_heading = ""
+
+            point = {
+                "label": normalized_label,
+                "utm_y": parsed["utm_y"],
+                "utm_x": parsed["utm_x"],
+                "latitude": parsed["latitude"],
+                "longitude": parsed["longitude"],
+                "polygon_group": polygon_group,
+                "polygon_heading": polygon_heading,
+                "table_type_override": current_area_type,
+                "source_page": None,
+                "source_method": None,
+            }
+
+            key = (
+                point["polygon_group"],
+                point["label"],
+                point["utm_y"],
+                point["utm_x"],
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            results.append(point)
 
     return results
 def detect_area_type(line):
@@ -1291,6 +2111,11 @@ def detect_area_type(line):
             .replace("Ö", "O")
             .replace("Ç", "C")
         )
+
+        stripped = normalized.strip()
+
+        if stripped.startswith("SEKIL"):
+            return None
 
         if "RUHSAT ALANI" in normalized:
             return "RUHSAT_ALANI"
@@ -1309,9 +2134,31 @@ def detect_area_type(line):
             return "PROJE_ALANI"
 
         if (
-            "CED ALANI" in normalized
-            or "CED IZIN ALANI" in normalized
+            "CED" in normalized
+            and any(
+                token in normalized
+                for token in (
+                    "ALAN",
+                    "SAHA",
+                    "SINIR",
+                    "POLIGON",
+                    "KOORDINAT",
+                    "IZIN",
+                )
+            )
         ):
+            if re.search(r"\bMEVCUT\b", normalized):
+                return "MEVCUT_CED_ALANI"
+
+            if (
+                re.search(r"\bYENI\b", normalized)
+                or "TALEP EDILEN" in normalized
+                or "PROJEYE KONU" in normalized
+                or "PLANLANAN" in normalized
+                or "ONGORULEN" in normalized
+            ):
+                return "YENI_CED_ALANI"
+
             return "CED_ALANI"
 
         if (
@@ -1325,14 +2172,25 @@ def detect_area_type(line):
             return "BITKISEL_TOPRAK_ALANI"
 
         if (
+            "TOPRAK" in normalized
+            and "DEPO" in normalized
+        ):
+            return "DEPOLAMA_ALANI"
+
+        if (
+            "PASA" in normalized
+            and "DOKUM" in normalized
+        ):
+            return "PASA_ALANI"
+
+        if (
             "PASA" in normalized
             and (
-                "STOK" in normalized
-                or "DEPO" in normalized
+                "DEPO" in normalized
                 or "ALAN" in normalized
             )
         ):
-            return "STOK_ALANI"
+            return "PASA_ALANI"
 
         if (
             "URUN STOK" in normalized
@@ -1346,9 +2204,35 @@ def detect_area_type(line):
         if "SANTIYE ALANI" in normalized:
             return "SANTIYE_ALANI"
 
+        if "OCAK ALANI" in normalized or "OCAK SAHASI" in normalized:
+            return "OCAK_ALANI"
+
+        if "GALERI" in normalized and (
+            "ALAN" in normalized
+            or "AGZI" in normalized
+            or "GIRIS" in normalized
+        ):
+            return "GALERI_ALANI"
+
+        if "TESIS ALANI" in normalized:
+            return "TESIS_ALANI"
+
+        if (
+            "DOLGU" in normalized
+            and "TESIS" in normalized
+        ):
+            return "TESIS_ALANI"
+
+        if (
+            "SAGLIK" in normalized
+            and "KORUMA" in normalized
+        ):
+            return "CALISILMAYACAK_ALAN"
+
         if (
             "KIRMA" in normalized
             and "ELEME" in normalized
+            and "ALAN" in normalized
         ):
             return "KIRMA_ELEME_ALANI"
 
