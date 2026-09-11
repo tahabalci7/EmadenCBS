@@ -23,6 +23,10 @@ from src.core.pdf_text_extraction_service import (
     PDFTextExtractionService,
 )
 from src.coordinate.coordinate_engine import CoordinateEngine
+from src.coordinate.pipeline_contract import (
+    collect_pipeline_diagnostics,
+    format_diagnostics_text,
+)
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.project_model import ProjectModel
 from src.map.map_viewer import MapViewer
@@ -218,12 +222,14 @@ class MainWindow(QMainWindow):
 
         step_start = time.perf_counter()
 
-        coordinates = (
-            CoordinateEngine.extract_coordinates(
+        extraction = (
+            CoordinateEngine.extract_pipeline(
                 raw_text,
                 pdf_path=self.current_pdf,
+                tables=tables,
             )
         )
+        coordinates = extraction["coordinates"]
 
         coordinate_duration = (
             time.perf_counter()
@@ -253,6 +259,12 @@ class MainWindow(QMainWindow):
             coordinates=coordinates,
             polygons=polygons,
             tables=tables,
+            diagnostics=collect_pipeline_diagnostics(
+                tables,
+                coordinates,
+                polygons,
+                extra=extraction["diagnostics"],
+            ),
         )
 
         # -------------------------------------------------
@@ -415,6 +427,13 @@ class MainWindow(QMainWindow):
             f"Oluşturulan Polygon Sayısı : "
             f"{project_model.polygon_count}\n\n"
         )
+
+        diagnostics_text = format_diagnostics_text(
+            project_model.diagnostics
+        )
+        if diagnostics_text:
+            text += diagnostics_text
+            text += "\n"
 
         # -------------------------------------------------
         # PERFORMANS

@@ -11,6 +11,13 @@ from src.coordinate.table_area_scope_resolver import (
     TableAreaScopeResolver,
 )
 from src.coordinate.table_detector import TableDetector
+from src.coordinate.pipeline_contract import (
+    CRS_INHERITED,
+    DETECTED_TABLE_NO_POINTS,
+    NO_COORDINATE_TABLE,
+    make_diagnostic,
+    merge_diagnostics,
+)
 
 
 class CoordinateEngine:
@@ -39,12 +46,37 @@ class CoordinateEngine:
         text,
         pdf_path=None,
     ):
-        tables = TableDetector.find_tables(
-            text
-        )
+        return cls.extract_pipeline(
+            text,
+            pdf_path=pdf_path,
+        )["coordinates"]
+
+    @classmethod
+    def extract_pipeline(
+        cls,
+        text,
+        pdf_path=None,
+        tables=None,
+    ):
+        if tables is None:
+            tables = TableDetector.find_tables(
+                text
+            )
 
         if not tables:
-            return []
+            return {
+                "tables": [],
+                "coordinates": [],
+                "diagnostics": [
+                    make_diagnostic(
+                        NO_COORDINATE_TABLE,
+                        severity="info",
+                        stage="detector",
+                        class_id="detector_parser_contract",
+                        detail="No coordinate table was accepted.",
+                    )
+                ],
+            }
 
         table_line_sources = (
             cls._match_table_line_sources(
@@ -61,6 +93,7 @@ class CoordinateEngine:
         )
 
         results = []
+        diagnostics = []
         seen = set()
         observation_records = []
         previous_table_type = None
@@ -136,13 +169,18 @@ class CoordinateEngine:
                 ],
             }
 
-            transform_crs = cls._resolve_transform_crs(
+            table_local_transform = cls._resolve_transform_crs(
                 datum_info
             )
+            inherited_from = None
+            transform_crs = table_local_transform
             if transform_crs is None:
-                transform_crs = previous_high_transform
-            if transform_crs is None:
-                transform_crs = document_transform
+                if previous_high_transform is not None:
+                    transform_crs = previous_high_transform
+                    inherited_from = "previous_high_table"
+                elif document_transform is not None:
+                    transform_crs = document_transform
+                    inherited_from = "document"
 
             projected_crs = None
             transform_metadata_crs = crs_metadata
@@ -170,6 +208,38 @@ class CoordinateEngine:
                 ),
             )
 
+            if not table_points:
+                diagnostics.append(
+                    make_diagnostic(
+                        DETECTED_TABLE_NO_POINTS,
+                        severity="error",
+                        stage="parser",
+                        class_id="detector_parser_contract",
+                        table_index=table_index,
+                        table_type=table_type,
+                        detail=(
+                            "TableDetector accepted a coordinate table; "
+                            "parser emitted 0 points."
+                        ),
+                    )
+                )
+            elif inherited_from:
+                diagnostics.append(
+                    make_diagnostic(
+                        CRS_INHERITED,
+                        severity="info",
+                        stage="crs",
+                        class_id="crs_inheritance",
+                        table_index=table_index,
+                        table_type=table_type,
+                        detail=(
+                            "WGS84 CRS inherited from "
+                            f"{inherited_from} because the table slice "
+                            "had no HIGH local zone."
+                        ),
+                    )
+                )
+
             observation_records.append(
                 cls._build_table_identity_record(
                     table=table,
@@ -187,11 +257,6 @@ class CoordinateEngine:
                 )
             )
 
-            for point in table_points:
-                polygon_group = point.get(
-                    "polygon_group",
-                    "DEFAULT",
-                )                
             for point in table_points:
                 polygon_group = point.get(
                     "polygon_group",
@@ -279,7 +344,11 @@ class CoordinateEngine:
             reverse=True,
         )
 
-        return results
+        return {
+            "tables": tables,
+            "coordinates": results,
+            "diagnostics": merge_diagnostics(diagnostics),
+        }
 
     @classmethod
     def _make_result(

@@ -17,13 +17,41 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from src.batch.corpus_preflight import discover_preflight_pdfs
 from src.coordinate.coordinate_engine import CoordinateEngine
+from src.coordinate.pipeline_contract import (
+    collect_pipeline_diagnostics,
+    compact_diagnostics,
+    reason_codes,
+)
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.project_model import ProjectModel
+from src.coordinate.ring_geometry import count_lonlat_crossings
 from src.coordinate.table_detector import TableDetector
 from src.coordinate.table_index import TableIndexLocator
 from src.export.kml_exporter import KMLExporter
 from src.ocr.ocr_engine import OCREngine
 from src.project.project_info_extractor import ProjectInfoExtractor
+
+
+def _count_crossed_kml_rings(polygons):
+    crossed = 0
+    for polygon in polygons:
+        for text in KMLExporter._build_coordinate_texts(polygon):
+            pairs = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(",")
+                pairs.append((float(parts[0]), float(parts[1])))
+            if (
+                len(pairs) >= 2
+                and pairs[0][0] == pairs[-1][0]
+                and pairs[0][1] == pairs[-1][1]
+            ):
+                pairs = pairs[:-1]
+            if count_lonlat_crossings(pairs):
+                crossed += 1
+    return crossed
 
 
 def safe_name(value):
@@ -82,11 +110,17 @@ def process_pdf(record, max_pages):
         pdf_path=record["path"],
     )
     polygons = PolygonBuilder.build(coordinates)
+    pipeline_diagnostics = collect_pipeline_diagnostics(
+        tables,
+        coordinates,
+        polygons,
+    )
     project = ProjectModel(
         pdf_path=str(record["path"]),
         coordinates=coordinates,
         polygons=polygons,
         tables=tables,
+        diagnostics=pipeline_diagnostics,
     )
     project.set_project_info(ProjectInfoExtractor().extract(text))
     type_counts = Counter(
@@ -107,6 +141,9 @@ def process_pdf(record, max_pages):
         "coordinate_count": len(coordinates),
         "polygon_count": len(polygons),
         "polygon_types": dict(type_counts),
+        "pipeline_reason_codes": reason_codes(pipeline_diagnostics),
+        "pipeline_diagnostics": compact_diagnostics(pipeline_diagnostics),
+        "kml_crossed_rings": _count_crossed_kml_rings(polygons),
         "company": project.project_info.get("company"),
         "license_no": project.project_info.get("license_no"),
         "elapsed_seconds": round(time.perf_counter() - started, 3),

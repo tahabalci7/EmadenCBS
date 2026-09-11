@@ -5,13 +5,15 @@ class ProjectModel:
         pdf_path,
         coordinates,
         polygons,
-        tables
+        tables,
+        diagnostics=None,
     ):
         self.pdf_path = pdf_path
         self.coordinates = coordinates
         self.polygons = polygons
         self.project_info = {}
         self.tables = tables
+        self.diagnostics = list(diagnostics or [])
 
     @property
     def coordinate_count(self):
