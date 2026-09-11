@@ -73,6 +73,80 @@ def stacked_utm_lines(labels, pairs):
     return tuple(lines)
 
 
+def compact_star_pairs(vertex_count=95, step=8, radius=0.004):
+    pairs = []
+    for index in range(vertex_count):
+        angle = (
+            -math.pi / 2
+            + index * step * 2 * math.pi / vertex_count
+        )
+        pairs.append(
+            (
+                32.10 + radius * math.cos(angle),
+                37.20 + radius * math.sin(angle),
+            )
+        )
+    return pairs
+
+
+def compact_four_cross_pairs(vertex_count=95, radius=0.003):
+    """Mostly-simple compact ellipse with four leftover-style bow-ties."""
+
+    pairs = []
+    for index in range(vertex_count):
+        angle = 2 * math.pi * index / vertex_count
+        pairs.append(
+            (
+                32.10 + radius * math.cos(angle),
+                37.20 + 0.7 * radius * math.sin(angle),
+            )
+        )
+    points = list(pairs)
+    for twist in range(4):
+        index = 6 + twist * (vertex_count // 4)
+        points[index], points[index + 2] = (
+            points[index + 2],
+            points[index],
+        )
+    return points
+
+
+def parse_kml_coordinate_text(coordinate_text):
+    pairs = []
+    for line in coordinate_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        pairs.append((float(parts[0]), float(parts[1])))
+    closed = list(pairs)
+    if (
+        len(pairs) >= 2
+        and pairs[0][0] == pairs[-1][0]
+        and pairs[0][1] == pairs[-1][1]
+    ):
+        pairs = pairs[:-1]
+    return pairs, closed
+
+
+def transformed_kml_texts(pairs):
+    """Production KML path prefers transformed lon/lat over table lon/lat."""
+
+    polygon = {
+        "points": [
+            {
+                "name": f"P{index}",
+                "y": 434500 + index,
+                "x": 4205100 + index,
+                "transformed_longitude": longitude,
+                "transformed_latitude": latitude,
+            }
+            for index, (longitude, latitude) in enumerate(pairs)
+        ]
+    }
+    return KMLExporter._build_coordinate_texts(polygon)
+
+
 class LayoutCapabilityMapTests(unittest.TestCase):
     def test_seven_difference_classes_are_registered(self):
         self.assertEqual(
@@ -92,6 +166,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             self.assertTrue(item["capabilities"])
             self.assertTrue(item["contract"])
             layout_class(item["id"])
+        self.assertIn(
+            "compact_degree_no_leftover_crossings",
+            layout_class("ring_geometry")["capabilities"],
+        )
 
     def test_extract_coordinates_still_returns_a_list(self):
         result = CoordinateEngine.extract_coordinates("prose without tables")
@@ -347,26 +425,39 @@ class RingGeometryClassTests(unittest.TestCase):
             self.assertEqual(count_lonlat_crossings(ring), 0)
 
     def test_compact_degree_star_is_not_smashed(self):
-        pairs = []
-        vertex_count = 95
-        step = 8
-        for index in range(vertex_count):
-            angle = (
-                -math.pi / 2
-                + index * step * 2 * math.pi / vertex_count
-            )
-            pairs.append(
-                (
-                    32.10 + 0.004 * math.cos(angle),
-                    37.20 + 0.004 * math.sin(angle),
-                )
-            )
+        pairs = compact_star_pairs()
         self.assertGreaterEqual(count_lonlat_crossings(pairs), 4)
         rings = repair_lonlat_rings(pairs)
         self.assertGreaterEqual(len(rings), 1)
         for ring in rings:
             self.assertEqual(count_lonlat_crossings(ring), 0)
             self.assertGreaterEqual(len(ring), 3)
+
+    def test_compact_degree_kml_text_has_zero_crossings(self):
+        """Destekci scans exported KML text, not only in-memory rings.
+
+        Production export prefers transformed lon/lat. A compact ~95-vertex
+        ring with leftover-style crossings must not keep those crossings
+        in the LinearRing coordinate text.
+        """
+
+        for pairs in (
+            compact_star_pairs(),
+            compact_four_cross_pairs(),
+        ):
+            span = max(lon for lon, _lat in pairs) - min(
+                lon for lon, _lat in pairs
+            )
+            self.assertLess(span, 0.01)
+            self.assertGreaterEqual(count_lonlat_crossings(pairs), 4)
+
+            texts = transformed_kml_texts(pairs)
+            self.assertGreaterEqual(len(texts), 1)
+            for text in texts:
+                open_pairs, closed_pairs = parse_kml_coordinate_text(text)
+                self.assertGreaterEqual(len(open_pairs), 3)
+                self.assertEqual(count_lonlat_crossings(open_pairs), 0)
+                self.assertEqual(count_lonlat_crossings(closed_pairs), 0)
 
 
 class GroupingTypingClassTests(unittest.TestCase):

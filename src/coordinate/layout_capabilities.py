@@ -99,11 +99,14 @@ LAYOUT_CLASSES = (
             "multi_cross_split",
             "lonlat_vs_utm_independent_repair",
             "degree_scale_not_metre_collapse",
+            "compact_degree_no_leftover_crossings",
         ),
         "contract": (
             "Bow-tie and multi-cross rings are uncrossed or split. KML lon/lat "
             "repair is independent of UTM. Degree-scale rings must not use a "
-            "~0.01 collapse that smashes small ÇED polygons."
+            "~0.01 collapse that smashes small ÇED polygons. Compact rings "
+            "(span ≪ 0.01°) must not leave multi-cross leftovers in exported "
+            "KML coordinate text."
         ),
     },
     {
