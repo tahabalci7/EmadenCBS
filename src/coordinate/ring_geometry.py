@@ -206,37 +206,71 @@ def repair_lonlat_rings(pairs, tolerance=1e-12):
     self-intersect in WGS84. KML scanners see lon/lat, so this
     pass uses those coordinates. Degree tolerance is tiny so
     distinct vertices are not collapsed.
+
+    A leftover multi-cross ring is repaired again after the
+    first uncross/split pass; every simple part is kept.
     """
 
     if len(pairs) < 3:
         return [list(pairs)] if pairs else []
 
-    points = [
-        {
-            "name": f"P{index}",
-            "y": longitude,
-            "x": latitude,
-        }
-        for index, (longitude, latitude) in enumerate(pairs)
-    ]
-
-    rings = repair_self_intersecting_rings(
-        points,
-        tolerance,
-    )
-
-    if not rings:
-        return [list(pairs)]
-
+    pending = [list(pairs)]
     repaired = []
-    for ring in rings:
-        repaired.append(
+    seen = set()
+
+    for _ in range(MAX_SPLIT_DEPTH):
+        if not pending:
+            break
+
+        current = pending.pop(0)
+        state = tuple(current)
+        if state in seen:
+            repaired.append(current)
+            continue
+        seen.add(state)
+
+        if count_lonlat_crossings(current, tolerance) == 0:
+            repaired.append(current)
+            continue
+
+        points = [
+            {
+                "name": f"P{index}",
+                "y": longitude,
+                "x": latitude,
+            }
+            for index, (longitude, latitude) in enumerate(current)
+        ]
+
+        rings = repair_self_intersecting_rings(
+            points,
+            tolerance,
+        )
+
+        if not rings:
+            repaired.append(current)
+            continue
+
+        converted = [
             [
                 (point["y"], point["x"])
                 for point in ring
             ]
-        )
-        return repaired
+            for ring in rings
+        ]
+
+        if converted == [current]:
+            repaired.append(current)
+            continue
+
+        for pairs_out in converted:
+            if count_lonlat_crossings(pairs_out, tolerance) == 0:
+                repaired.append(pairs_out)
+            else:
+                pending.append(pairs_out)
+
+    repaired.extend(pending)
+    return repaired or [list(pairs)]
 
 
 def count_lonlat_crossings(pairs, tolerance=1e-12):
@@ -253,8 +287,9 @@ def count_lonlat_crossings(pairs, tolerance=1e-12):
 
 def _collect_simple_parts(points, was_closed, tolerance):
     simple_parts = []
+    area_epsilon = _area_epsilon(tolerance)
 
-    for part in _split_into_simple_rings(points, 0):
+    for part in _split_into_simple_rings(points, 0, tolerance):
         cleaned = collapse_consecutive_duplicates(
             part,
             tolerance,
@@ -263,7 +298,7 @@ def _collect_simple_parts(points, was_closed, tolerance):
             continue
         if find_bowtie_edge_pair(cleaned) is not None:
             continue
-        if _ring_area(cleaned) <= _AREA_EPSILON:
+        if _ring_area(cleaned) <= area_epsilon:
             continue
         simple_parts.append(
             _restore_closed(cleaned, was_closed)
@@ -300,7 +335,7 @@ def _uncross_once(points, crossing):
     )
 
 
-def _split_into_simple_rings(points, depth):
+def _split_into_simple_rings(points, depth, tolerance):
     working = list(points)
 
     if depth > MAX_SPLIT_DEPTH:
@@ -318,22 +353,22 @@ def _split_into_simple_rings(points, depth):
         return [working]
 
     for crossing in crossings:
-        parts = _split_once(working, crossing)
+        parts = _split_once(working, crossing, tolerance)
         if parts is None:
             continue
 
         result = []
         for part in parts:
             result.extend(
-                _split_into_simple_rings(part, depth + 1)
+                _split_into_simple_rings(part, depth + 1, tolerance)
             )
         if result:
             return result
 
-    return [working]
+    return []
 
 
-def _split_once(points, crossing):
+def _split_once(points, crossing, tolerance):
     start, end = crossing
     a1 = points[start]
     a2 = points[(start + 1) % len(points)]
@@ -349,7 +384,7 @@ def _split_once(points, crossing):
 
     parts = []
     for ring in (ring_a, ring_b):
-        cleaned = collapse_consecutive_duplicates(ring)
+        cleaned = collapse_consecutive_duplicates(ring, tolerance)
         if len(cleaned) >= 3:
             parts.append(cleaned)
 
@@ -378,7 +413,7 @@ def _ring_was_closed(points, tolerance):
 
 
 def _ring_state_key(points, tolerance):
-    quantize = max(tolerance, 0.01)
+    quantize = tolerance if tolerance > 0 else 0.01
     return tuple(
         (
             round(float(point["y"]) / quantize),
@@ -386,6 +421,12 @@ def _ring_state_key(points, tolerance):
         )
         for point in points
     )
+
+
+def _area_epsilon(tolerance):
+    if tolerance >= 0.001:
+        return _AREA_EPSILON
+    return 0.0
 
 
 def _ring_area(points):

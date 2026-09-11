@@ -13,6 +13,7 @@ NUMERIC_LABEL_PATTERN = re.compile(
 )
 
 COMBINED_NUMBER_PATTERN = (
+    r"(?<![A-Za-zÇĞİÖŞÜçğıöşü])"
     r"([+-]?(?:"
     r"\d{1,3}(?:\.\d{3}){2,}(?:,\d+)?|"
     r"\d{1,3}(?:\.\d{3})+,\d+|"
@@ -159,6 +160,58 @@ def is_utm_northing(value) -> bool:
 
 def is_valid_utm_pair(utm_y, utm_x) -> bool:
     return is_utm_easting(utm_y) and is_utm_northing(utm_x)
+
+
+def _merge_space_grouped_thousands(tokens):
+    """
+    Rejoin European space-grouped UTM tokens after whitespace split.
+
+    ``463 000`` and ``4 014 000`` are one easting/northing each.
+    A leading point number such as ``1 463 000`` is not absorbed
+    because ``1463000`` is not a valid UTM easting or northing.
+    """
+
+    merged = []
+    index = 0
+
+    while index < len(tokens):
+        token = tokens[index]
+        grouped = None
+        grouped_end = index
+
+        if re.fullmatch(r"[+-]?\d{1,3}", token):
+            for extra in range(3, 0, -1):
+                end = index + 1 + extra
+                if end > len(tokens):
+                    continue
+                parts = tokens[index:end]
+                if not all(
+                    re.fullmatch(r"\d{3}", part)
+                    for part in parts[1:]
+                ):
+                    continue
+                compact = "".join(parts).replace("+", "")
+                try:
+                    value = float(compact)
+                except ValueError:
+                    continue
+                if (
+                    is_utm_easting(value)
+                    or is_utm_northing(value)
+                ):
+                    grouped = " ".join(parts)
+                    grouped_end = end
+                    break
+
+        if grouped is not None:
+            merged.append(grouped)
+            index = grouped_end
+            continue
+
+        merged.append(token)
+        index += 1
+
+    return merged
 
 
 def is_valid_coordinate_block(
@@ -1087,6 +1140,64 @@ def _find_coordinate_sequence(tokens):
                 "longitude": None,
             }
 
+    for y_start in range(token_count):
+        for y_end, utm_y in _join_numeric_fragments(
+            tokens,
+            y_start,
+            max_parts=3,
+        ):
+            if not 100000 <= utm_y <= 999999:
+                continue
+
+            for x_start in range(
+                y_end,
+                min(y_end + 3, token_count),
+            ):
+                for x_end, utm_x in _join_numeric_fragments(
+                    tokens,
+                    x_start,
+                    max_parts=3,
+                ):
+                    if not 3000000 <= utm_x <= 5000000:
+                        continue
+
+                    return {
+                        "label_end": y_start,
+                        "utm_y": utm_y,
+                        "utm_x": utm_x,
+                        "latitude": None,
+                        "longitude": None,
+                    }
+
+    for x_start in range(token_count):
+        for x_end, utm_x in _join_numeric_fragments(
+            tokens,
+            x_start,
+            max_parts=3,
+        ):
+            if not 3000000 <= utm_x <= 5000000:
+                continue
+
+            for y_start in range(
+                x_end,
+                min(x_end + 3, token_count),
+            ):
+                for _y_end, utm_y in _join_numeric_fragments(
+                    tokens,
+                    y_start,
+                    max_parts=3,
+                ):
+                    if not 100000 <= utm_y <= 999999:
+                        continue
+
+                    return {
+                        "label_end": x_start,
+                        "utm_y": utm_y,
+                        "utm_x": utm_x,
+                        "latitude": None,
+                        "longitude": None,
+                    }
+
     return None
 
 
@@ -1104,11 +1215,13 @@ def recover_row_coordinate_from_values(
     veya etiketi kısmen bozulmuş satırlar.
     """
 
-    tokens = [
-        token.strip()
-        for token in line.split()
-        if token.strip()
-    ]
+    tokens = _merge_space_grouped_thousands(
+        [
+            token.strip()
+            for token in line.split()
+            if token.strip()
+        ]
+    )
 
     if len(tokens) < 4:
         return None
@@ -1392,11 +1505,13 @@ def parse_row_coordinate(
     """
 
     tokens = _expand_combined_tokens(
-        [
-            token.strip()
-            for token in line.split()
-            if token.strip()
-        ]
+        _merge_space_grouped_thousands(
+            [
+                token.strip()
+                for token in line.split()
+                if token.strip()
+            ]
+        )
     )
 
     if len(tokens) < 3:

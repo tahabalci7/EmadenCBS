@@ -65,6 +65,12 @@ class CoordinateEngine:
         observation_records = []
         previous_table_type = None
         previous_section = None
+        document_transform = (
+            cls._resolve_transform_crs(
+                DatumDetector.detect(text)
+            )
+        )
+        previous_high_transform = None
 
         for table_index, table in enumerate(
             tables,
@@ -130,13 +136,28 @@ class CoordinateEngine:
                 ],
             }
 
+            transform_crs = cls._resolve_transform_crs(
+                datum_info
+            )
+            if transform_crs is None:
+                transform_crs = previous_high_transform
+            if transform_crs is None:
+                transform_crs = document_transform
+
             projected_crs = None
-            if datum_info["crs_confidence"] == "HIGH":
-                projected_crs = (
-                    CRSResolver.resolve_projected_crs(
-                        crs_metadata
-                    )
-                )
+            transform_metadata_crs = crs_metadata
+            if transform_crs is not None:
+                projected_crs = transform_crs["projected_crs"]
+                transform_metadata_crs = transform_crs["metadata"]
+
+            if (
+                datum_info["crs_confidence"] == "HIGH"
+                and projected_crs is not None
+            ):
+                previous_high_transform = {
+                    "projected_crs": projected_crs,
+                    "metadata": crs_metadata,
+                }
 
             transformed_coordinate_cache = {}
 
@@ -199,7 +220,7 @@ class CoordinateEngine:
                 transform_metadata = (
                     cls._build_transform_metadata(
                         point=point,
-                        crs_metadata=crs_metadata,
+                        crs_metadata=transform_metadata_crs,
                         projected_crs=projected_crs,
                         coordinate_cache=(
                             transformed_coordinate_cache
@@ -1142,3 +1163,95 @@ class CoordinateEngine:
         item,
     ):
         return item["score"]
+
+    @classmethod
+    def _resolve_transform_crs(cls, datum_info):
+        if not isinstance(datum_info, dict):
+            return None
+
+        metadata = {
+            "datum": datum_info.get(
+                "utm_datum"
+            ),
+            "type": "UTM",
+            "zone": datum_info.get(
+                "zone"
+            ),
+            "dom": datum_info.get(
+                "dom"
+            ),
+            "projection": datum_info.get(
+                "projection"
+            ),
+        }
+
+        if datum_info.get("crs_confidence") == "HIGH":
+            projected_crs = CRSResolver.resolve_projected_crs(
+                metadata
+            )
+            if projected_crs is not None:
+                return {
+                    "projected_crs": projected_crs,
+                    "metadata": metadata,
+                }
+
+        if datum_info.get("crs_confidence") == "CONFLICTING":
+            return None
+
+        projection_candidates = datum_info.get(
+            "crs_projection_candidates"
+        ) or []
+        if any(
+            cls._is_three_degree_projection(item)
+            for item in projection_candidates
+        ):
+            return None
+
+        inferred_zone = cls._zone_from_dom(
+            datum_info.get("dom")
+        )
+        if inferred_zone is None:
+            return None
+
+        inferred = dict(metadata)
+        inferred["zone"] = inferred_zone
+        inferred["projection"] = ""
+        projected_crs = CRSResolver.resolve_projected_crs(
+            inferred
+        )
+        if projected_crs is None:
+            return None
+
+        return {
+            "projected_crs": projected_crs,
+            "metadata": inferred,
+        }
+
+    @staticmethod
+    def _zone_from_dom(value):
+        if value in (None, "", "Bilinmiyor"):
+            return None
+
+        try:
+            dom = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+        return {
+            27: 35,
+            33: 36,
+            39: 37,
+        }.get(dom)
+
+    @staticmethod
+    def _is_three_degree_projection(value):
+        text = (
+            str(value)
+            .upper()
+            .replace("İ", "I")
+            .replace(" ", "")
+        )
+        return (
+            text.startswith("3DERECE")
+            or text.startswith("3°")
+        )
