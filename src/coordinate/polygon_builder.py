@@ -1,5 +1,9 @@
 from collections import OrderedDict
 
+from src.coordinate.ring_geometry import (
+    repair_self_intersecting_ring,
+)
+
 
 class PolygonBuilder:
 
@@ -159,7 +163,10 @@ class PolygonBuilder:
         seen_geometries = set()
 
         for group in grouped.values():
-            points = group["points"]
+            points = repair_self_intersecting_ring(
+                group["points"]
+            )
+            group["points"] = points
 
             if len(points) < 3:
                 continue

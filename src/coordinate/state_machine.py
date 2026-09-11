@@ -1664,13 +1664,31 @@ def detect_area_type(line):
             return "PROJE_ALANI"
 
         if (
-            "CED ALANI" in normalized
-            or "CED IZIN ALANI" in normalized
-            or (
-                "CED" in normalized
-                and "POLIGON" in normalized
+            "CED" in normalized
+            and any(
+                token in normalized
+                for token in (
+                    "ALAN",
+                    "SAHA",
+                    "SINIR",
+                    "POLIGON",
+                    "KOORDINAT",
+                    "IZIN",
+                )
             )
         ):
+            if re.search(r"\bMEVCUT\b", normalized):
+                return "MEVCUT_CED_ALANI"
+
+            if (
+                re.search(r"\bYENI\b", normalized)
+                or "TALEP EDILEN" in normalized
+                or "PROJEYE KONU" in normalized
+                or "PLANLANAN" in normalized
+                or "ONGORULEN" in normalized
+            ):
+                return "YENI_CED_ALANI"
+
             return "CED_ALANI"
 
         if (

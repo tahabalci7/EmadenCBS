@@ -149,6 +149,8 @@ class TableClassifier:
                     "SAHA",
                     "SINIR",
                     "KOORDINAT",
+                    "POLIGON",
+                    "IZIN",
                 ],
             )
         ):
@@ -302,6 +304,13 @@ class TableClassifier:
             ],
         ):
             return "RUHSAT_ALANI"
+
+        prefix_hint = cls._classify_prefix_hint(
+            table_text
+        )
+
+        if prefix_hint != "DIGER":
+            return prefix_hint
 
         return "DIGER"
 
@@ -489,6 +498,98 @@ class TableClassifier:
         return " ".join(
             meaningful
         )
+
+    @classmethod
+    def _classify_prefix_hint(
+        cls,
+        table_text: str,
+    ) -> str:
+        """
+        Numbered Tablo caption yoksa veya başlık
+        çıkarma şirket/rapor satırına düştüyse,
+        koordinat verisinden önceki alan başlığını
+        ayrıca dene. Böylece ÇED tabloları DIGER
+        kalıp önceki RUHSAT bağlamını devralmaz.
+        """
+
+        window = []
+
+        for line in table_text.splitlines()[:30]:
+            value = line.strip()
+
+            if not value:
+                continue
+
+            if cls._looks_like_context_noise_line(value):
+                continue
+
+            normalized = cls._normalize(value)
+
+            if (
+                cls._looks_like_coordinate_data(
+                    normalized
+                )
+                or cls._looks_like_numeric_or_pair_line(
+                    value
+                )
+            ):
+                break
+
+            window.append(value)
+            del window[:-3]
+
+            for start in range(len(window)):
+                candidate = cls._normalize(
+                    " ".join(window[start:])
+                )
+                hinted = cls._classify_ced_heading(
+                    candidate
+                )
+
+                if hinted != "DIGER":
+                    return hinted
+
+        return "DIGER"
+
+    @classmethod
+    def _classify_ced_heading(
+        cls,
+        normalized: str,
+    ) -> str:
+        if "CED" not in normalized:
+            return "DIGER"
+
+        if not cls._contains_any(
+            normalized,
+            [
+                "ALAN",
+                "SAHA",
+                "SINIR",
+                "KOORDINAT",
+                "POLIGON",
+                "IZIN",
+            ],
+        ):
+            return "DIGER"
+
+        if re.search(r"\bMEVCUT\b", normalized):
+            return "MEVCUT_CED_ALANI"
+
+        if (
+            re.search(r"\bYENI\b", normalized)
+            or cls._contains_any(
+                normalized,
+                [
+                    "TALEP EDILEN",
+                    "PROJEYE KONU",
+                    "PLANLANAN",
+                    "ONGORULEN",
+                ],
+            )
+        ):
+            return "YENI_CED_ALANI"
+
+        return "CED_ALANI"
 
     @classmethod
     def _looks_like_context_noise_line(
