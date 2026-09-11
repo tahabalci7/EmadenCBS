@@ -102,7 +102,10 @@ class CombinedGeographicCoordinateTests(unittest.TestCase):
         points = parse_coordinate_blocks(
             "KOORDINAT\nR1\n434529\n4205189\nlatitude:longitude"
         )
-        self.assertEqual(points, [])
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["utm_y"], 434529.0)
+        self.assertIsNone(points[0]["latitude"])
+        self.assertIsNone(points[0]["longitude"])
 
     def test_existing_label_policy_accepts_real_examples(self):
         for label in ("R1", "R.1", "C1.1", "ADT.1", "SA2.15"):

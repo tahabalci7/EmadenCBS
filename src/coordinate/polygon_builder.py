@@ -1,7 +1,7 @@
 from collections import OrderedDict
 
 from src.coordinate.ring_geometry import (
-    repair_self_intersecting_ring,
+    repair_self_intersecting_rings,
 )
 
 
@@ -163,52 +163,58 @@ class PolygonBuilder:
         seen_geometries = set()
 
         for group in grouped.values():
-            points = repair_self_intersecting_ring(
+            rings = repair_self_intersecting_rings(
                 group["points"]
             )
-            group["points"] = points
 
-            if len(points) < 3:
+            if not rings:
                 continue
 
-            cls._summarize_crs_metadata(
-                group
-            )
+            for points in rings:
+                if len(points) < 3:
+                    continue
 
-            geometry_key = cls._geometry_key(
-                points
-            )
+                ring_group = dict(group)
+                ring_group["points"] = points
 
-            if geometry_key in seen_geometries:
-                continue
+                cls._summarize_crs_metadata(
+                    ring_group
+                )
 
-            seen_geometries.add(
-                geometry_key
-            )
-
-            area = cls._calculate_area(
-                points
-            )
-
-            polygon = {
-                **group,
-                "point_count": len(points),
-                "is_closed": cls._is_closed(
+                geometry_key = cls._geometry_key(
                     points
-                ),
-                "area_m2": round(
-                    area,
-                    2,
-                ),
-                "area_ha": round(
-                    area / 10000,
-                    4,
-                ),
-            }
+                )
 
-            polygons.append(
-                polygon
-            )
+                if geometry_key in seen_geometries:
+                    continue
+
+                seen_geometries.add(
+                    geometry_key
+                )
+
+                area = cls._calculate_area(
+                    points
+                )
+
+                polygon = {
+                    **ring_group,
+                    "point_count": len(points),
+                    "is_closed": cls._is_closed(
+                        points
+                    ),
+                    "area_m2": round(
+                        area,
+                        2,
+                    ),
+                    "area_ha": round(
+                        area / 10000,
+                        4,
+                    ),
+                }
+
+                polygons.append(
+                    polygon
+                )
 
         polygons = cls._remove_subset_polygons(
             polygons
