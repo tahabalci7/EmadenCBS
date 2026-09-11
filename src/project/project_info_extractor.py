@@ -32,6 +32,30 @@ class ProjectInfoExtractor:
             "province": province,
             "district": district,
         }
+
+    UNKNOWN = "Bilinmiyor"
+
+    _COMPANY_LABEL_PREFIX = re.compile(
+        r"^(?:"
+        r"PROJE\s+SAH[Iİ]B[Iİ]N[Iİ]N\s+"
+        r"(?:ADI|[UÜ]NVANI)|"
+        r"PROJE\s+SAH[Iİ]B[Iİ]|"
+        r"F[Iİ]RMA\s+[UÜ]NVANI"
+        r")\s*[:.\-]?\s*",
+        flags=re.IGNORECASE,
+    )
+
+    _JUNK_MINE_TYPE_PREFIX = re.compile(
+        r"^(?:"
+        r"(?:\d{3,10}\s+)?"
+        r"(?:RUHSAT\s+|S[Iİ]C[Iİ]L\s+)?"
+        r"NUMARALI\s+"
+        r"|"
+        r"(?:\d{3,10}\s+)?"
+        r"(?:SAYILI|NOLU|NO['’]?LU|NO\.?\s*LU)\s+"
+        r")+",
+        flags=re.IGNORECASE,
+    )
     @staticmethod
     def _normalize_turkish_unicode(value):
         if not value:
@@ -60,19 +84,31 @@ class ProjectInfoExtractor:
         patterns = [
             (
                 r"PROJE\s+SAHİBİNİN\s+ADI"
-                r"\s*[:\-]?\s*\n+\s*([^\n]+)"
+                r"\s*[:.\-]?\s*([^\n]+)"
+            ),
+            (
+                r"PROJE\s+SAH[Iİ]B[Iİ]N[Iİ]N\s+ADI"
+                r"\s*[:.\-]?\s*([^\n]+)"
             ),
             (
                 r"PROJE\s+SAHİBİNİN\s+ÜNVANI"
-                r"\s*[:\-]?\s*\n+\s*([^\n]+)"
+                r"\s*[:.\-]?\s*([^\n]+)"
+            ),
+            (
+                r"PROJE\s+SAH[Iİ]B[Iİ]N[Iİ]N\s+[UÜ]NVANI"
+                r"\s*[:.\-]?\s*([^\n]+)"
             ),
             (
                 r"PROJE\s+SAHİBİ"
-                r"\s*[:\-]?\s*\n+\s*([^\n]+)"
+                r"\s*[:.\-]?\s*([^\n]+)"
             ),
             (
                 r"FİRMA\s+ÜNVANI"
-                r"\s*[:\-]?\s*\n+\s*([^\n]+)"
+                r"\s*[:.\-]?\s*([^\n]+)"
+            ),
+            (
+                r"F[Iİ]RMA\s+[UÜ]NVANI"
+                r"\s*[:.\-]?\s*([^\n]+)"
             ),
         ]
 
@@ -82,7 +118,7 @@ class ProjectInfoExtractor:
         )
 
         if value != "Bilinmiyor":
-            return value
+            return self._clean_company_value(value)
 
         lines = [
             line.strip()
@@ -134,7 +170,7 @@ class ProjectInfoExtractor:
             )
 
             if self._looks_like_company(candidate):
-                return candidate
+                return self._clean_company_value(candidate)
 
         return "Bilinmiyor"
 
@@ -424,18 +460,26 @@ class ProjectInfoExtractor:
             value,
         ).strip()
         # Ruhsat / sicil başlıklarından maden adına
-        # taşınan ön ekleri temizle.
+        # taşınan ön ekleri temizle. "NUMARALI MANYEZİT"
+        # gibi numara düşmüş kalıntılar da atılır.
         value = re.sub(
             r"^(?:"
             r"SİCİL\s*:?\s*\d+\s*|"
             r"SICIL\s*:?\s*\d+\s*|"
+            r"S[Iİ]C[Iİ]L\s*:?\s*\d+\s*|"
             r"\d+\s+RUHSAT\s+NUMARALI\s+|"
             r"RUHSAT\s+NUMARALI\s+|"
+            r"(?:\d+\s+)?NUMARALI\s+|"
+            r"\d+\s+(?:SAYILI|NOLU|NO['’]?LU)\s+(?:RUHSAT\s+)?|"
             r"RUHSAT\s+NO(?:SU)?\s*:?\s*\d+\s*"
             r")+",
             "",
             value,
             flags=re.IGNORECASE,
+        ).strip()
+        value = self._JUNK_MINE_TYPE_PREFIX.sub(
+            "",
+            value,
         ).strip()
         # Maden isminden sonra proje açıklaması başlamışsa kes.
         value = re.split(
@@ -472,31 +516,56 @@ class ProjectInfoExtractor:
         numarası olarak kabul edilmez.
         """
 
-        patterns = [
-            # SİCİL 74362
-            # SİCİL: 74362
-            # SİCİL NO: 74362
-            r"\bSİCİL\s*"
-            r"(?:NO(?:SU)?|NUMARASI)?"
-            r"\s*[:\-]?\s*(\d{3,})\b",
-
-            # 74362 RUHSAT NUMARALI
-            r"\b(\d{3,})\s+"
-            r"RUHSAT\s+NUMARALI\b",
-
-            # RUHSAT NO: 74362
-            # RUHSAT NOSU: 74362
-            # RUHSAT NUMARASI: 74362
-            r"\bRUHSAT\s*"
-            r"(?:NO(?:SU)?|NUMARASI)"
-            r"\s*[:\-]?\s*(\d{3,})\b",
-
-            # RUHSAT: 74362
-            r"\bRUHSAT\s*"
-            r"[:\-]\s*(\d{3,})\b",
+        # Türkçe İ/I ve satır kırıklı tablo düzenleri
+        # (SİCİL NO / SICIL NO / 42077 sayılı ruhsat).
+        labeled_patterns = [
+            (
+                r"\bS[Iİ]C[Iİ]L\s*"
+                r"(?:NO(?:SU)?|NUMARASI)?"
+                r"\s*[:.\-]?\s*(\d{4,10})\b",
+                True,
+            ),
+            (
+                r"\bRUHSAT\s+S[Iİ]C[Iİ]L\s*"
+                r"(?:NO(?:SU)?|NUMARASI)?"
+                r"\s*[:.\-]?\s*(\d{4,10})\b",
+                True,
+            ),
+            (
+                r"\b(\d{4,10})\s+"
+                r"RUHSAT\s+NUMARALI\b",
+                True,
+            ),
+            (
+                r"\b(\d{4,10})\s+"
+                r"(?:SAYILI|NOLU|NO['’]?LU|NO\.?\s*LU)\s+"
+                r"RUHSAT\b",
+                True,
+            ),
+            (
+                r"\bRUHSAT\s*"
+                r"(?:NO(?:SU)?|NUMARASI)"
+                r"\s*[:.\-]?\s*(\d{4,10})\b",
+                True,
+            ),
+            (
+                r"\bRUHSAT\s*"
+                r"[:.\-]\s*(\d{4,10})\b",
+                True,
+            ),
+            (
+                r"\b(\d{4,10})\s+NUMARALI\b",
+                False,
+            ),
+            (
+                r"\bER[Iİ][SŞ][Iİ]M\s*"
+                r"(?:NO(?:SU)?|NUMARASI)?"
+                r"\s*[:.\-]?\s*(\d{4,10})\b",
+                False,
+            ),
         ]
 
-        for pattern in patterns:
+        for pattern, strong in labeled_patterns:
             match = re.search(
                 pattern,
                 text,
@@ -506,11 +575,187 @@ class ProjectInfoExtractor:
             if match is None:
                 continue
 
-            return self._clean_value(
+            candidate = self._clean_value(
                 match.group(1)
             )
 
+            if self._is_plausible_license_no(
+                candidate,
+                strong=strong,
+            ):
+                return candidate
+
         return "Bilinmiyor"
+
+    @classmethod
+    def _is_plausible_license_no(
+        cls,
+        value,
+        strong=True,
+    ):
+        if not value or not str(value).isdigit():
+            return False
+
+        digits = str(value)
+        length = len(digits)
+        number = int(digits)
+
+        if length < 4 or length > 10:
+            return False
+
+        # UTM kuzey değeri ruhsat değildir.
+        if 3000000 <= number <= 4999999:
+            return False
+
+        # Etiketsiz "123456 NUMARALI" UTM doğu
+        # değeri olabilir; yalnız 4-5 veya 8-10
+        # haneli adayları kabul et.
+        if not strong and 100000 <= number <= 899999:
+            return False
+
+        return True
+
+    def _clean_company_value(self, value):
+        value = self._clean_value(value)
+        value = self._COMPANY_LABEL_PREFIX.sub(
+            "",
+            value,
+        ).strip()
+        value = value.strip(
+            " \t\r\n:;-|"
+        )
+
+        if not value:
+            return "Bilinmiyor"
+
+        return value
+
+    @classmethod
+    def build_project_export_name(
+        cls,
+        project_info,
+        default="eMadenCBS Projesi",
+    ):
+        """
+        KML belge adı / dosya adı için şirket + sicil.
+
+        Bilinmiyor ve "NUMARALI …" maden-cinsi
+        kalıntıları ayırt edici parça olarak
+        kullanılmaz.
+        """
+
+        info = project_info or {}
+
+        company = cls._usable_name_token(
+            info.get("company")
+        )
+        license_no = cls._usable_name_token(
+            info.get("license_no")
+        )
+
+        parts = []
+
+        if company:
+            parts.append(company)
+
+        if license_no:
+            parts.append(license_no)
+
+        if not parts:
+            return default
+
+        return " - ".join(parts)
+
+    @classmethod
+    def build_export_filename(
+        cls,
+        project_info,
+        default="Proje",
+    ):
+        info = project_info or {}
+        parts = []
+
+        company = cls._usable_name_token(
+            info.get("company")
+        )
+        license_no = cls._usable_name_token(
+            info.get("license_no")
+        )
+
+        if company:
+            parts.append(company)
+
+        if license_no:
+            parts.append(license_no)
+
+        raw_name = "_".join(parts) if parts else default
+
+        file_name = re.sub(
+            r'[<>:"/\\|?*]',
+            "_",
+            raw_name,
+        )
+        file_name = re.sub(
+            r"\s+",
+            "_",
+            file_name,
+        ).strip("._ ")
+
+        return file_name or default
+
+    @classmethod
+    def _usable_name_token(cls, value):
+        if value is None:
+            return ""
+
+        text = str(value).strip()
+
+        if not text or text == cls.UNKNOWN:
+            return ""
+
+        text = cls._COMPANY_LABEL_PREFIX.sub(
+            "",
+            text,
+        ).strip()
+
+        if not text or text == cls.UNKNOWN:
+            return ""
+
+        if cls._is_junk_distinguishing_token(text):
+            return ""
+
+        return text
+
+    @classmethod
+    def _is_junk_distinguishing_token(cls, value):
+        if not value:
+            return True
+
+        folded = (
+            str(value)
+            .upper()
+            .replace("İ", "I")
+            .replace("Ş", "S")
+            .replace("Ğ", "G")
+            .replace("Ü", "U")
+            .replace("Ö", "O")
+            .replace("Ç", "C")
+        )
+        folded = re.sub(r"\s+", " ", folded).strip()
+
+        if folded == cls.UNKNOWN.upper():
+            return True
+
+        if folded.startswith("NUMARALI"):
+            return True
+
+        if re.fullmatch(
+            r"NUMARALI(?:\s+\S+){0,3}",
+            folded,
+        ):
+            return True
+
+        return False
 
     def _extract_location(self, text):
         patterns = [
