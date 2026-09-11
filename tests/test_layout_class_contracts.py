@@ -257,6 +257,14 @@ class DetectorParserContractClassTests(unittest.TestCase):
         self.assertEqual(pipeline["tables"], [])
         self.assertIn(NO_COORDINATE_TABLE, pipeline["reason_codes"])
 
+    def test_unindexed_points_are_not_a_silent_table_miss(self):
+        diagnostics = collect_pipeline_diagnostics(
+            tables=["accepted-table"],
+            coordinates=[{"name": "1", "y": 434529, "x": 4205189}],
+            polygons=[{"table_type": "PROJE_ALANI", "points": [{}] * 4}],
+        )
+        self.assertNotIn(DETECTED_TABLE_NO_POINTS, reason_codes(diagnostics))
+
 
 class CrsInheritanceClassTests(unittest.TestCase):
     def test_document_crs_transforms_table_without_local_zone(self):

@@ -126,9 +126,17 @@ def collect_pipeline_diagnostics(
             for item in diagnostics
             if item.get("code") == DETECTED_TABLE_NO_POINTS
         }
-        for table_index in range(1, len(tables) + 1):
-            if table_index in pointed_tables:
-                continue
+        if not coordinates:
+            missing_tables = range(1, len(tables) + 1)
+        elif pointed_tables:
+            missing_tables = [
+                table_index
+                for table_index in range(1, len(tables) + 1)
+                if table_index not in pointed_tables
+            ]
+        else:
+            missing_tables = []
+        for table_index in missing_tables:
             if table_index in already_reported:
                 continue
             diagnostics.append(
