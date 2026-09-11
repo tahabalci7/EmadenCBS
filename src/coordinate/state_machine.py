@@ -2121,20 +2121,69 @@ def parse_coordinate_blocks(
     current_polygon_heading = ""
     current_area_type = None
     unnamed_point_serial = 0
+    pending_area_heading_lines = []
+
+    def detect_method2_area_type(line):
+        detected = detect_area_type(line)
+
+        if detected is not None:
+            return detected
+
+        value = str(line).strip()
+        normalized = (
+            value.upper()
+            .replace("İ", "I")
+            .replace("Ş", "S")
+            .replace("Ğ", "G")
+            .replace("Ü", "U")
+            .replace("Ö", "O")
+            .replace("Ç", "C")
+        )
+
+        if not any(
+            boundary in normalized
+            for boundary in (
+                "ALAN",
+                "SAHA",
+                "DEPO",
+                "KOORDINAT",
+                "SINIR",
+            )
+        ):
+            return None
+
+        for count in range(
+            1,
+            len(pending_area_heading_lines) + 1,
+        ):
+            candidate = " ".join(
+                pending_area_heading_lines[-count:]
+                + [value]
+            )
+            detected = detect_area_type(
+                candidate
+            )
+
+            if detected is not None:
+                return detected
+
+        return None
 
     while i < len(lines):
         line = lines[i]
 
         if is_ignorable_table_context_line(line):
+            pending_area_heading_lines.clear()
             i += 1
             continue
 
         # Satırlar ilerlerken alan türünü güncelle (ikinci yöntem için).
-        detected_area_type = detect_area_type(
+        detected_area_type = detect_method2_area_type(
             line
         )
 
         if detected_area_type is not None:
+            pending_area_heading_lines.clear()
             current_area_type = (
                 detected_area_type
             )
@@ -2202,8 +2251,28 @@ def parse_coordinate_blocks(
                 )
 
         if not parsed_points:
+            value = str(line).strip()
+
+            if (
+                detected_area_type is None
+                and value
+                and len(value) <= 80
+                and re.search(
+                    r"[A-Za-zÇĞİÖŞÜçğıöşü]",
+                    value,
+                )
+            ):
+                pending_area_heading_lines.append(
+                    line
+                )
+                del pending_area_heading_lines[:-3]
+            elif detected_area_type is None:
+                pending_area_heading_lines.clear()
+
             i += 1
             continue
+
+        pending_area_heading_lines.clear()
 
         for parsed in parsed_points:
             normalized_label = normalize_ocr_label(

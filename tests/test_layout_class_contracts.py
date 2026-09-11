@@ -244,6 +244,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             "ed50_space_and_dilim_zone_aliases",
             layout_class("crs_inheritance")["capabilities"],
         )
+        self.assertIn(
+            "late_caption_not_previous_continuation",
+            layout_class("table_continuation")["capabilities"],
+        )
+        self.assertIn(
+            "auxiliary_not_inherit_dominant_ring",
+            layout_class("grouping_typing")["capabilities"],
+        )
 
     def test_extract_coordinates_still_returns_a_list(self):
         result = CoordinateEngine.extract_coordinates("prose without tables")
@@ -284,6 +292,185 @@ class TableContinuationClassTests(unittest.TestCase):
         self.assertEqual(len(pipeline["coordinates"]), 4)
         self.assertEqual(len(pipeline["polygons"]), 1)
         self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+
+    def _stok_ced_scale_rings(self):
+        """Witness class: ~0.23 ha STOK vs ~100 ha ÇED (UTM metres)."""
+
+        stok_pairs = square_utm(434500, 4205100, 48)
+        extra_stok = (
+            (434512, 4205100),
+            (434524, 4205100),
+            (434536, 4205100),
+            (434548, 4205100),
+        )
+        stok_pairs = (stok_pairs[0],) + extra_stok + stok_pairs[1:]
+        ced_pairs = square_utm(430000, 4200000, 1000)
+        extra_ced = tuple(
+            (430000 + step * 80, 4200000)
+            for step in range(1, 13)
+        )
+        ced_pairs = (ced_pairs[0],) + extra_ced + ced_pairs[1:]
+        leftover_pairs = square_utm(434520, 4205120, 50)
+        leftover_pairs = leftover_pairs + (
+            (434545, 4205120),
+        )
+        return stok_pairs, ced_pairs, leftover_pairs
+
+    def test_late_caption_ced_body_is_not_stok_continuation(self):
+        """Headerless ÇED rows before Tablo N. Yeni ÇED are that table.
+
+        Destekci class: attaching those rows to the open STOK table yields
+        STOK ≫ ÇED (witness ~99 ha STOK vs ~0.23 ha Yeni ÇED). Tables say
+        the large ring is ÇED (~1 km, ~100 ha) and STOK is the small
+        stockpile (~50 m, ~0.23 ha).
+        """
+
+        stok_pairs, ced_pairs, leftover_pairs = self._stok_ced_scale_rings()
+        text = "\n".join(
+            [
+                page(
+                    1,
+                    "Tablo 4. Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"S{i}" for i in range(1, 9)),
+                        stok_pairs,
+                    ),
+                ),
+                page(
+                    2,
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"C{i}" for i in range(1, 17)),
+                        ced_pairs,
+                    ),
+                    "Tablo 5. Yeni ÇED Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"Y{i}" for i in range(1, 6)),
+                        leftover_pairs,
+                    ),
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        polygons = pipeline["polygons"]
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        ced_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"]
+            in {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        ]
+        self.assertTrue(stok_areas, "STOK ring missing")
+        self.assertTrue(ced_areas, "ÇED ring missing")
+        self.assertLess(max(stok_areas), 2.0)
+        self.assertGreater(max(ced_areas), 50.0)
+        self.assertLess(max(stok_areas) * 10, max(ced_areas))
+        stok_labels = {
+            point["name"]
+            for point in pipeline["coordinates"]
+            if point["table_type"] == "STOK_ALANI"
+        }
+        self.assertTrue(stok_labels)
+        self.assertFalse(
+            any(label.startswith("C") for label in stok_labels)
+        )
+
+    def test_split_yeni_ced_heading_is_not_swallowed_by_stok(self):
+        stok_pairs, ced_pairs, _leftover = self._stok_ced_scale_rings()
+        text = "\n".join(
+            [
+                page(
+                    1,
+                    "Tablo 4. Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"S{i}" for i in range(1, 9)),
+                        stok_pairs,
+                    ),
+                ),
+                page(
+                    2,
+                    "Yeni ÇED",
+                    "Alanı",
+                    "Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"C{i}" for i in range(1, 17)),
+                        ced_pairs,
+                    ),
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        types = {
+            point["table_type"]
+            for point in pipeline["coordinates"]
+            if str(point["name"]).startswith("C")
+        }
+        self.assertTrue(
+            types & {"CED_ALANI", "YENI_CED_ALANI"}
+        )
+        ced_areas = [
+            polygon["area_ha"]
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"]
+            in {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        ]
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        self.assertGreater(max(ced_areas), 50.0)
+        self.assertLess(max(stok_areas or [0]), 2.0)
+
+    def test_leftover_same_series_before_new_table_still_continues(self):
+        text = "\n".join(
+            [
+                page(
+                    1,
+                    "Tablo 1. Proje Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("P1", "P2"),
+                        square_utm()[:2],
+                    ),
+                ),
+                page(
+                    2,
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("P3", "P4"),
+                        square_utm()[2:],
+                    ),
+                    "Tablo 2. Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("S1", "S2", "S3", "S4"),
+                        square_utm(434800, 4205400, 40),
+                    ),
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        p_types = {
+            point["table_type"]
+            for point in pipeline["coordinates"]
+            if point["name"].startswith("P")
+        }
+        self.assertEqual(p_types, {"PROJE_ALANI"})
+        s_types = {
+            point["table_type"]
+            for point in pipeline["coordinates"]
+            if point["name"].startswith("S")
+        }
+        self.assertEqual(s_types, {"STOK_ALANI"})
 
 
 class CoordinateRecordLayoutClassTests(unittest.TestCase):
