@@ -177,8 +177,84 @@ def repair_self_intersecting_rings(points, tolerance=0.01):
     if find_bowtie_edge_pair(uncrossed) is None:
         return [_restore_closed(uncrossed, was_closed)]
 
+    simple_parts = _collect_simple_parts(
+        uncrossed,
+        was_closed,
+        tolerance,
+    )
+
+    if not simple_parts:
+        simple_parts = _collect_simple_parts(
+            working,
+            was_closed,
+            tolerance,
+        )
+
+    if simple_parts:
+        return simple_parts
+
+    # Never drop a ring because split failed; KML-space
+    # repair can still uncross lon/lat independently.
+    return [_restore_closed(uncrossed, was_closed)]
+
+
+def repair_lonlat_rings(pairs, tolerance=1e-12):
+    """
+    Repair a KML lon/lat ring independently of UTM y/x.
+
+    Vertex order that is simple in projected metres can still
+    self-intersect in WGS84. KML scanners see lon/lat, so this
+    pass uses those coordinates. Degree tolerance is tiny so
+    distinct vertices are not collapsed.
+    """
+
+    if len(pairs) < 3:
+        return [list(pairs)] if pairs else []
+
+    points = [
+        {
+            "name": f"P{index}",
+            "y": longitude,
+            "x": latitude,
+        }
+        for index, (longitude, latitude) in enumerate(pairs)
+    ]
+
+    rings = repair_self_intersecting_rings(
+        points,
+        tolerance,
+    )
+
+    if not rings:
+        return [list(pairs)]
+
+    repaired = []
+    for ring in rings:
+        repaired.append(
+            [
+                (point["y"], point["x"])
+                for point in ring
+            ]
+        )
+        return repaired
+
+
+def count_lonlat_crossings(pairs, tolerance=1e-12):
+    points = [
+        {
+            "name": f"P{index}",
+            "y": longitude,
+            "x": latitude,
+        }
+        for index, (longitude, latitude) in enumerate(pairs)
+    ]
+    return count_ring_crossings(points, tolerance)
+
+
+def _collect_simple_parts(points, was_closed, tolerance):
     simple_parts = []
-    for part in _split_into_simple_rings(uncrossed, 0):
+
+    for part in _split_into_simple_rings(points, 0):
         cleaned = collapse_consecutive_duplicates(
             part,
             tolerance,
@@ -237,20 +313,24 @@ def _split_into_simple_rings(points, depth):
             return [working]
         return []
 
-    crossing = find_bowtie_edge_pair(working)
-    if crossing is None:
+    crossings = find_all_bowtie_edge_pairs(working)
+    if not crossings:
         return [working]
 
-    parts = _split_once(working, crossing)
-    if parts is None:
-        return []
+    for crossing in crossings:
+        parts = _split_once(working, crossing)
+        if parts is None:
+            continue
 
-    result = []
-    for part in parts:
-        result.extend(
-            _split_into_simple_rings(part, depth + 1)
-        )
-    return result
+        result = []
+        for part in parts:
+            result.extend(
+                _split_into_simple_rings(part, depth + 1)
+            )
+        if result:
+            return result
+
+    return [working]
 
 
 def _split_once(points, crossing):
@@ -341,7 +421,7 @@ def _is_zero_length(point_a, point_b, tolerance=1e-9):
 
 
 def _segments_properly_intersect(a1, a2, b1, b2):
-    """True only for an interior crossing, not a shared endpoint."""
+    """True for an interior X-crossing or a T-junction on an edge."""
 
     p1 = _xy(a1)
     p2 = _xy(a2)
@@ -357,17 +437,26 @@ def _segments_properly_intersect(a1, a2, b1, b2):
     orientation_4 = _orientation(p3, p4, p2)
 
     if (
-        orientation_1 == 0
-        or orientation_2 == 0
-        or orientation_3 == 0
-        or orientation_4 == 0
+        orientation_1 != 0
+        and orientation_2 != 0
+        and orientation_3 != 0
+        and orientation_4 != 0
     ):
-        return False
+        return (
+            orientation_1 != orientation_2
+            and orientation_3 != orientation_4
+        )
 
-    return (
-        orientation_1 != orientation_2
-        and orientation_3 != orientation_4
-    )
+    if orientation_1 == 0 and _strictly_between(p3, p1, p2):
+        return True
+    if orientation_2 == 0 and _strictly_between(p4, p1, p2):
+        return True
+    if orientation_3 == 0 and _strictly_between(p1, p3, p4):
+        return True
+    if orientation_4 == 0 and _strictly_between(p2, p3, p4):
+        return True
+
+    return False
 
 
 def _orientation(p, q, r):
@@ -401,7 +490,7 @@ def _segment_intersection_point(a1, a2, b1, b2):
         - (p1[1] - p3[1]) * (p3[0] - p4[0])
     ) / denominator
 
-    if t <= 1e-9 or t >= 1 - 1e-9:
+    if t < -1e-9 or t > 1 + 1e-9:
         return None
 
     easting = p1[0] + t * (p2[0] - p1[0])
@@ -452,3 +541,26 @@ def _interpolate_numeric(point_a, point_b, t, field):
         return None
 
     return start + t * (end - start)
+
+
+def _strictly_between(point, start, end, epsilon=1e-12):
+    if point == start or point == end:
+        return False
+
+    min_y = min(start[0], end[0])
+    max_y = max(start[0], end[0])
+    min_x = min(start[1], end[1])
+    max_x = max(start[1], end[1])
+
+    if not (
+        min_y - epsilon <= point[0] <= max_y + epsilon
+        and min_x - epsilon <= point[1] <= max_x + epsilon
+    ):
+        return False
+
+    return (
+        point[0] > min_y + epsilon
+        or point[0] < max_y - epsilon
+        or point[1] > min_x + epsilon
+        or point[1] < max_x - epsilon
+    )
