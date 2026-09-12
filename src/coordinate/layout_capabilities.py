@@ -137,6 +137,7 @@ LAYOUT_CLASSES = (
             "auxiliary_not_inherit_dominant_ring",
             "parenthetical_ced_is_not_tesisi_type",
             "geo_ring_not_inherit_auxiliary",
+            "unattested_lattice_not_composite_ring",
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
@@ -148,7 +149,9 @@ LAYOUT_CLASSES = (
             "or late-caption table. A tesisi/stok/ünite caption with "
             "parenthetical (Talep Edilen ÇED Alanı) stays tesisi/stok; "
             "a leftover 15-pt geographic ring after Malzeme Stok is ÇED, "
-            "not STOK."
+            "not STOK. A 500 m cartesian lattice mixed with real tesisi "
+            "verts, or UTM pairs absent from the table text, is not a "
+            "STOK ring."
         ),
     },
     {

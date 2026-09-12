@@ -263,6 +263,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("grouping_typing")["capabilities"],
         )
         self.assertIn(
+            "unattested_lattice_not_composite_ring",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
             "geographic_only_unlabeled_ring",
             layout_class("coordinate_record_layouts")["capabilities"],
         )
@@ -1249,6 +1253,120 @@ class GroupingTypingClassTests(unittest.TestCase):
         ]
         self.assertLess(max(stok_areas or [0]), 2.0)
         self.assertGreater(max(ced_areas or [0]), 50.0)
+
+
+    def test_tesisi_plus_unattested_500m_grid_is_not_99ha_stok(self):
+        """Destekci class: KML Stok Alanı 2 was tesisi verts + a 500 m
+        lattice (387472/388972 × 4435315/4436315) that is not in the PDF.
+        """
+
+        tesisi = (
+            (388232.5696, 4436109.12),
+            (388266.12, 4436109.12),
+            (388266.12, 4436164.80),
+            (388204.00, 4436136.00),
+        )
+        grid = [
+            (387472.0 + 500 * east, 4435315.0 + 500 * north)
+            for east in range(4)
+            for north in range(3)
+        ]
+        coordinates = []
+        for index, (easting, northing) in enumerate(tesisi + tuple(grid)):
+            coordinates.append(
+                {
+                    "name": f"P{index}",
+                    "y": easting,
+                    "x": northing,
+                    "table_type": "STOK_ALANI",
+                    "section": "Malzeme Stok Alanı",
+                    "table_index": 5,
+                    "polygon_group": "DEFAULT",
+                }
+            )
+
+        polygons = PolygonBuilder.build(coordinates)
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        self.assertLess(
+            max(stok_areas or [0]),
+            2.0,
+            "invented 500 m lattice must not stay a ~99 ha STOK ring",
+        )
+        eastings = [
+            point["y"]
+            for polygon in polygons
+            for point in polygon["points"]
+        ]
+        self.assertFalse(
+            any(abs(easting - 387472) < 2 for easting in eastings),
+            "unattested grid corner 387472 must not remain",
+        )
+
+    def test_real_captions_do_not_emit_invented_grid_easting(self):
+        tesisi_pairs = (
+            (388232.5696, 4436109.12),
+            (388266.12, 4436109.12),
+            (388266.12, 4436164.80),
+            (388232.5696, 4436164.80),
+            (388204.00, 4436136.00),
+            (388240.00, 4436136.00),
+            (388250.00, 4436120.00),
+            (388220.00, 4436150.00),
+            (388245.00, 4436140.00),
+        )
+        stok_pairs = square_utm(388180, 4436080, 48)
+        text = "\n".join(
+            [
+                page(
+                    15,
+                    "Tablo 1  Kırma-Eleme Tesisi Koordinatları "
+                    "(Talep Edilen ÇED Alanı)",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"N{index}" for index in range(1, 10)),
+                        tesisi_pairs,
+                    ),
+                    "Mekanik Çözme Ünitesi Koordinatları",
+                    *stacked_utm_lines(
+                        ("U1", "U2", "U3", "U4"),
+                        square_utm(388300, 4436200, 48),
+                    ),
+                ),
+                page(
+                    16,
+                    "Malzeme Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("S1", "S2", "S3", "S4"),
+                        stok_pairs,
+                    ),
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        eastings = [point["y"] for point in pipeline["coordinates"]]
+        self.assertFalse(
+            any(abs(easting - 387472) < 2 for easting in eastings)
+        )
+        types = {
+            polygon["table_type"]
+            for polygon in pipeline["polygons"]
+        }
+        self.assertIn("STOK_ALANI", types)
+        self.assertTrue(
+            types & {"KIRMA_ELEME_ALANI", "TESIS_ALANI"}
+        )
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        self.assertLess(max(stok_areas or [0]), 2.0)
+
 
 
 class MetadataKmlNamingClassTests(unittest.TestCase):

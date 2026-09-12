@@ -3,6 +3,7 @@ from collections import OrderedDict
 
 from src.coordinate.ring_geometry import (
     repair_self_intersecting_rings,
+    trim_invented_lattice_composite,
 )
 
 
@@ -172,6 +173,7 @@ class PolygonBuilder:
                 rings = [group["points"]]
 
             for points in rings:
+                points = trim_invented_lattice_composite(points)
                 if len(points) < 3:
                     continue
 

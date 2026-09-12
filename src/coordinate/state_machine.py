@@ -724,6 +724,14 @@ def parse_column_major_coordinates(
                 )
                 y_vals = [value for kind, value in window if kind == "Y"]
                 x_vals = [value for kind, value in window if kind == "X"]
+                unique_y = {round(value, 1) for value in y_vals}
+                unique_x = {round(value, 1) for value in x_vals}
+                if (
+                    len(unique_y) >= 3
+                    and len(unique_x) >= 3
+                    and len(y_vals) == len(unique_y) * len(unique_x)
+                ):
+                    continue
                 lat_vals = [
                     value for kind, value in window if kind == "LAT"
                 ]
