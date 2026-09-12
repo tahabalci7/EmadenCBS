@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from src.coordinate.coordinate_engine import CoordinateEngine
+from src.coordinate.crs_resolver import CRSResolver
 from src.coordinate.layout_capabilities import (
     LAYOUT_CLASS_IDS,
     LAYOUT_CLASSES,
@@ -1366,6 +1367,159 @@ class GroupingTypingClassTests(unittest.TestCase):
             if polygon["table_type"] == "STOK_ALANI"
         ]
         self.assertLess(max(stok_areas or [0]), 2.0)
+
+    def _witness_tesisi_plus_500m_grid_utm(self):
+        tesisi = (
+            (388232.5696, 4436109.12),
+            (388266.12, 4436109.12),
+            (388266.12, 4436164.80),
+            (388204.00, 4436136.00),
+        )
+        grid = [
+            (387472.0 + 500 * east, 4435315.0 + 500 * north)
+            for east in range(4)
+            for north in range(3)
+        ]
+        return tesisi + tuple(grid)
+
+    def _utm_to_lonlat(self, easting, northing):
+        return CRSResolver.transform_to_wgs84(
+            easting,
+            northing,
+            {
+                "datum": "WGS84",
+                "type": "UTM",
+                "zone": 36,
+                "projection": "UTM",
+            },
+        )
+
+    def test_live_lonlat_path_drops_99ha_stok_composite(self):
+        """Live process_pdf / GUI path: extract_pipeline stores leftover
+        composite verts as lon/lat in y/x (no metre easting). Destekci
+        inverse-UTM 36N of Stok Alanı 2 is tesisi + 387472/4435315 grid.
+
+        #13 only trimmed metre y/x, so this ring survived as ~99 ha STOK.
+        """
+
+        coordinates = []
+        for index, (easting, northing) in enumerate(
+            self._witness_tesisi_plus_500m_grid_utm()
+        ):
+            longitude, latitude = self._utm_to_lonlat(easting, northing)
+            coordinates.append(
+                {
+                    "name": f"P{index}",
+                    "y": longitude,
+                    "x": latitude,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "transformed_longitude": longitude,
+                    "transformed_latitude": latitude,
+                    "table_type": "STOK_ALANI",
+                    "section": "Malzeme Stok Alanı",
+                    "table_index": 5,
+                    "polygon_group": "DEFAULT",
+                }
+            )
+
+        polygons = PolygonBuilder.build(coordinates)
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        self.assertLess(
+            max(stok_areas or [0]),
+            2.0,
+            "live lon/lat y/x path must drop the ~99 ha STOK composite",
+        )
+        self.assertLess(
+            max((polygon["area_ha"] for polygon in polygons), default=0),
+            2.0,
+            "no ~99 ha placemark of any type",
+        )
+        remaining_lons = [
+            point["y"]
+            for polygon in polygons
+            for point in polygon["points"]
+        ]
+        self.assertFalse(
+            any(abs(longitude - 31.680573) < 1e-4 for longitude in remaining_lons),
+            "inverse-UTM grid corner 387472 / 31.68057 must not remain",
+        )
+
+        model = ProjectModel("witness.pdf", coordinates, polygons, [])
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "live-stok.kml")
+            KMLExporter.export(model, path)
+            kml_text = Path(path).read_text(encoding="utf-8")
+        self.assertNotRegex(kml_text, r"9[0-9]\.\d{4} ha")
+        self.assertNotRegex(kml_text, r"1[0-4]\d\.\d{4} ha")
+
+    def test_extract_pipeline_lonlat_lattice_after_stok_is_not_99ha(self):
+        """Same tables Destekci's process_pdf sees: tesisi UTM, Malzeme
+        Stok UTM, then unlabeled lon/lat of tesisi+500 m grid.
+        """
+
+        tesisi_pairs = (
+            (388232.5696, 4436109.12),
+            (388266.12, 4436109.12),
+            (388266.12, 4436164.80),
+            (388232.5696, 4436164.80),
+            (388204.00, 4436136.00),
+            (388240.00, 4436136.00),
+            (388250.00, 4436120.00),
+            (388220.00, 4436150.00),
+            (388245.00, 4436140.00),
+        )
+        geo_lines = []
+        for easting, northing in self._witness_tesisi_plus_500m_grid_utm():
+            longitude, latitude = self._utm_to_lonlat(easting, northing)
+            geo_lines.extend(
+                (
+                    f"{latitude:.8f}",
+                    f"{longitude:.8f}",
+                )
+            )
+        text = "\n".join(
+            [
+                page(
+                    15,
+                    "Tablo 1  Kırma-Eleme Tesisi Koordinatları "
+                    "(Talep Edilen ÇED Alanı)",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"N{index}" for index in range(1, 10)),
+                        tesisi_pairs,
+                    ),
+                ),
+                page(
+                    16,
+                    "Malzeme Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("S1", "S2", "S3", "S4"),
+                        square_utm(388180, 4436080, 48),
+                    ),
+                    *geo_lines,
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        self.assertLess(max(stok_areas or [0]), 2.0)
+        self.assertFalse(
+            any(
+                polygon["area_ha"] > 50
+                for polygon in pipeline["polygons"]
+            ),
+            "live extract_pipeline must not emit a ~99 ha composite",
+        )
 
 
 

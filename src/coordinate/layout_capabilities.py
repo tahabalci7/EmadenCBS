@@ -151,7 +151,8 @@ LAYOUT_CLASSES = (
             "a leftover 15-pt geographic ring after Malzeme Stok is ÇED, "
             "not STOK. A 500 m cartesian lattice mixed with real tesisi "
             "verts, or UTM pairs absent from the table text, is not a "
-            "STOK ring."
+            "STOK ring — including when the live path stores the ring "
+            "as lon/lat in y/x (inverse-project, then trim)."
         ),
     },
     {
