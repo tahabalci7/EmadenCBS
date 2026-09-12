@@ -6,7 +6,11 @@ from decimal import Decimal, InvalidOperation
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.crs_resolver import CRSResolver
 from src.coordinate.datum_detector import DatumDetector
-from src.coordinate.state_machine import parse_coordinate_blocks
+from src.coordinate.state_machine import (
+    NUMBER_TOKEN_PATTERN,
+    parse_coordinate_blocks,
+    parse_localized_number,
+)
 from src.coordinate.table_area_scope_resolver import (
     TableAreaScopeResolver,
 )
@@ -135,6 +139,13 @@ class CoordinateEngine:
                 if (
                     table_type == "DIGER"
                     and previous_table_type
+                    and previous_table_type
+                    not in {
+                        "STOK_ALANI",
+                        "TESIS_ALANI",
+                        "KIRMA_ELEME_ALANI",
+                        "PASA_ALANI",
+                    }
                 ):
                     if (
                         previous_table_type
@@ -229,6 +240,10 @@ class CoordinateEngine:
                         table_index - 1
                     ]
                 ),
+            )
+            table_points = cls._drop_unattested_points(
+                table_points,
+                table,
             )
 
             if not table_points:
@@ -374,6 +389,74 @@ class CoordinateEngine:
             "coordinates": results,
             "diagnostics": merge_diagnostics(diagnostics),
         }
+
+    @classmethod
+    def _numeric_tokens_from_text(cls, table_text):
+        tokens = []
+        # Line-at-a-time: NUMBER_TOKEN_PATTERN treats newline as
+        # thousands-grouping whitespace (C10\\n430720 → 0\\n430).
+        for line in str(table_text or "").splitlines():
+            for match in NUMBER_TOKEN_PATTERN.finditer(line):
+                try:
+                    tokens.append(
+                        parse_localized_number(match.group(1))
+                    )
+                except (TypeError, ValueError):
+                    continue
+        return tokens
+
+    @classmethod
+    def _value_attested(cls, value, tokens, tolerance=0.6):
+        if value is None:
+            return False
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False
+        return any(abs(number - token) <= tolerance for token in tokens)
+
+    @classmethod
+    def _point_attested(cls, point, tokens):
+        easting = point.get("utm_y")
+        northing = point.get("utm_x")
+        latitude = point.get("latitude")
+        longitude = point.get("longitude")
+        if (
+            cls._value_attested(easting, tokens)
+            and cls._value_attested(northing, tokens)
+        ):
+            return True
+        if (
+            cls._value_attested(latitude, tokens)
+            and cls._value_attested(longitude, tokens)
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _drop_unattested_points(cls, points, table_text):
+        """Drop verts invented by dual-column / lattice pairing.
+
+        A point stays if its UTM pair or lon/lat pair appears in the
+        table slice. If nothing would remain, keep the original parse
+        so OCR formatting cannot empty a real table.
+        """
+
+        if not points:
+            return points
+
+        tokens = cls._numeric_tokens_from_text(table_text)
+        if not tokens:
+            return points
+
+        kept = [
+            point
+            for point in points
+            if cls._point_attested(point, tokens)
+        ]
+        if not kept:
+            return points
+        return kept
 
     @classmethod
     def _make_result(

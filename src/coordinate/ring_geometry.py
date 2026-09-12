@@ -28,6 +28,136 @@ _AREA_EPSILON = 1e-6
 METRE_COLLAPSE_TOLERANCE = 0.01
 DEGREE_COLLAPSE_TOLERANCE = 1e-12
 GEOGRAPHIC_ABS_LIMIT = 180.0
+LATTICE_STEP_MIN = 80.0
+LATTICE_STEP_MAX = 5000.0
+LATTICE_SNAP_TOLERANCE = 2.0
+
+
+def _longest_regular_axis(values):
+    """Largest subset of values that sit on one regular step."""
+
+    unique = sorted(set(round(float(value), 1) for value in values))
+    if len(unique) < 3:
+        return None
+
+    best = None
+    for start_index, start in enumerate(unique):
+        for other in unique[start_index + 1:]:
+            step = other - start
+            if not LATTICE_STEP_MIN <= step <= LATTICE_STEP_MAX:
+                continue
+            chain = [
+                value
+                for value in unique
+                if abs(
+                    (value - start) / step
+                    - round((value - start) / step)
+                ) * step
+                <= LATTICE_SNAP_TOLERANCE
+            ]
+            if len(chain) < 3:
+                continue
+            if best is None or len(chain) > len(best[2]):
+                best = (step, start, chain)
+
+    return best
+
+
+def _bbox_area(pairs):
+    if not pairs:
+        return 0.0
+    eastings = [pair[0] for pair in pairs]
+    northings = [pair[1] for pair in pairs]
+    return abs(max(eastings) - min(eastings)) * abs(
+        max(northings) - min(northings)
+    )
+
+
+def trim_invented_lattice_composite(points):
+    """Drop a regular metre lattice mixed into a compact real cluster.
+
+    Destekci class: tesisi UTM verts plus a 500 m grid that is not in the
+    PDF text, exported as one ~99 ha STOK ring.
+    """
+
+    if len(points) < 6:
+        return points
+
+    metre_points = []
+    for index, point in enumerate(points):
+        try:
+            easting = float(point["y"])
+            northing = float(point["x"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if (
+            abs(easting) <= GEOGRAPHIC_ABS_LIMIT
+            and abs(northing) <= GEOGRAPHIC_ABS_LIMIT
+        ):
+            continue
+        metre_points.append((index, easting, northing))
+
+    if len(metre_points) < 6:
+        return points
+
+    eastings = [easting for _index, easting, _northing in metre_points]
+    northings = [northing for _index, _easting, northing in metre_points]
+    axis_e = _longest_regular_axis(eastings)
+    axis_n = _longest_regular_axis(northings)
+    if axis_e is None or axis_n is None:
+        return points
+
+    step_e, origin_e, _chain_e = axis_e
+    step_n, origin_n, _chain_n = axis_n
+    lattice_indexes = []
+    cluster_indexes = []
+    lattice_pairs = []
+    cluster_pairs = []
+
+    for index, easting, northing in metre_points:
+        cell_e = round((easting - origin_e) / step_e)
+        cell_n = round((northing - origin_n) / step_n)
+        on_grid = (
+            abs(easting - (origin_e + cell_e * step_e))
+            <= LATTICE_SNAP_TOLERANCE
+            and abs(northing - (origin_n + cell_n * step_n))
+            <= LATTICE_SNAP_TOLERANCE
+        )
+        if on_grid:
+            lattice_indexes.append(index)
+            lattice_pairs.append((easting, northing))
+        else:
+            cluster_indexes.append(index)
+            cluster_pairs.append((easting, northing))
+
+    unique_e = len({round(easting, 1) for easting, _northing in lattice_pairs})
+    unique_n = len({round(northing, 1) for _easting, northing in lattice_pairs})
+    cartesian = unique_e * unique_n
+    filled = (
+        cartesian
+        and len(lattice_indexes) >= 0.6 * cartesian
+        and unique_e >= 3
+        and unique_n >= 3
+    )
+    lattice_area = _bbox_area(lattice_pairs)
+    cluster_area = _bbox_area(cluster_pairs)
+
+    if (
+        filled
+        and len(cluster_indexes) >= 3
+        and cluster_area * 10 < lattice_area
+    ):
+        return [points[index] for index in cluster_indexes]
+
+    if (
+        filled
+        and len(cluster_indexes) < 3
+        and len(lattice_indexes) >= 6
+        and lattice_area > 20000
+    ):
+        return []
+
+    return points
 
 
 def inferred_ring_tolerance(points):
