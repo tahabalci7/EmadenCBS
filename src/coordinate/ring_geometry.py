@@ -31,6 +31,7 @@ GEOGRAPHIC_ABS_LIMIT = 180.0
 LATTICE_STEP_MIN = 80.0
 LATTICE_STEP_MAX = 5000.0
 LATTICE_SNAP_TOLERANCE = 2.0
+_LONLAT_TO_UTM = {}
 
 
 def _longest_regular_axis(values):
@@ -63,6 +64,90 @@ def _longest_regular_axis(values):
     return best
 
 
+def _lonlat_to_utm_metres(longitude, latitude, epsg=None):
+    """Project WGS84 lon/lat to UTM metres so lattice trim can see grids."""
+
+    try:
+        longitude = float(longitude)
+        latitude = float(latitude)
+    except (TypeError, ValueError):
+        return None
+    if not (
+        -GEOGRAPHIC_ABS_LIMIT <= longitude <= GEOGRAPHIC_ABS_LIMIT
+        and -90.0 <= latitude <= 90.0
+    ):
+        return None
+
+    if isinstance(epsg, int) and 20000 <= epsg <= 33000:
+        target = f"EPSG:{epsg}"
+    else:
+        zone = int((longitude + 180.0) // 6) + 1
+        if not 1 <= zone <= 60:
+            return None
+        target = f"EPSG:{32600 + zone}"
+
+    try:
+        from pyproj import Transformer
+    except ImportError:
+        return None
+
+    transformer = _LONLAT_TO_UTM.get(target)
+    if transformer is None:
+        transformer = Transformer.from_crs(
+            "EPSG:4326",
+            target,
+            always_xy=True,
+        )
+        _LONLAT_TO_UTM[target] = transformer
+
+    easting, northing = transformer.transform(longitude, latitude)
+    if (
+        abs(easting) <= GEOGRAPHIC_ABS_LIMIT
+        and abs(northing) <= GEOGRAPHIC_ABS_LIMIT
+    ):
+        return None
+    return easting, northing
+
+
+def _projected_metre_pair(point):
+    """Metre pair from UTM y/x, else inverse-projected lon/lat.
+
+    Live process_pdf stores leftover / transformed rings as lon/lat in
+    y/x. Lattice trim that only looks at metre y/x then no-ops and the
+    ~99 ha STOK composite survives.
+    """
+
+    try:
+        easting = float(point["y"])
+        northing = float(point["x"])
+    except (TypeError, ValueError, KeyError):
+        easting = None
+        northing = None
+    else:
+        if (
+            abs(easting) > GEOGRAPHIC_ABS_LIMIT
+            or abs(northing) > GEOGRAPHIC_ABS_LIMIT
+        ):
+            return easting, northing
+
+    longitude = point.get("transformed_longitude")
+    latitude = point.get("transformed_latitude")
+    if longitude is None or latitude is None:
+        longitude = point.get("longitude")
+        latitude = point.get("latitude")
+    if longitude is None or latitude is None:
+        longitude = easting
+        latitude = northing
+    if longitude is None or latitude is None:
+        return None
+
+    return _lonlat_to_utm_metres(
+        longitude,
+        latitude,
+        point.get("projected_crs_epsg"),
+    )
+
+
 def _bbox_area(pairs):
     if not pairs:
         return 0.0
@@ -76,8 +161,9 @@ def _bbox_area(pairs):
 def trim_invented_lattice_composite(points):
     """Drop a regular metre lattice mixed into a compact real cluster.
 
-    Destekci class: tesisi UTM verts plus a 500 m grid that is not in the
-    PDF text, exported as one ~99 ha STOK ring.
+    Destekci class: tesisi verts plus a 500 m grid that is not in the
+    PDF text, exported as one ~99 ha STOK ring. Live process_pdf often
+    stores that ring as lon/lat in y/x; invert to UTM before trimming.
     """
 
     if len(points) < 6:
@@ -85,16 +171,10 @@ def trim_invented_lattice_composite(points):
 
     metre_points = []
     for index, point in enumerate(points):
-        try:
-            easting = float(point["y"])
-            northing = float(point["x"])
-        except (TypeError, ValueError, KeyError):
+        pair = _projected_metre_pair(point)
+        if pair is None:
             continue
-        if (
-            abs(easting) <= GEOGRAPHIC_ABS_LIMIT
-            and abs(northing) <= GEOGRAPHIC_ABS_LIMIT
-        ):
-            continue
+        easting, northing = pair
         metre_points.append((index, easting, northing))
 
     if len(metre_points) < 6:
