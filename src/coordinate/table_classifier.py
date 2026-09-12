@@ -358,7 +358,8 @@ class TableClassifier:
         çıkarmaya çalışır.
 
         Öncelik:
-        1. "Tablo XX..." şeklindeki satır
+        1. "Tablo XX..." şeklindeki satır (anywhere — PDF reading
+           order can emit the body before the caption)
         2. Koordinat kelimesi içeren ilk anlamlı satır
         3. İlk birkaç satır
 
@@ -375,64 +376,18 @@ class TableClassifier:
         if not lines:
             return ""
 
-        # -----------------------------------------------------
-        # TABLO XX BAŞLIĞI
-        # -----------------------------------------------------
+        numbered = cls._extract_numbered_caption(
+            lines
+        )
 
-        for index, line in enumerate(lines[:20]):
-
-            if cls._looks_like_context_noise_line(line):
-                continue
-
-            normalized = cls._normalize(line)
-
-            if cls.NUMBERED_TABLE_CAPTION_PATTERN.match(
-                normalized
-            ):
-                heading_lines = [line]
-
-                # OCR bazı başlıkları iki veya üç satıra bölebilir.
-                for next_line in lines[
-                    index + 1:index + 4
-                ]:
-                    if cls._looks_like_context_noise_line(
-                        next_line
-                    ):
-                        break
-
-                    next_normalized = cls._normalize(
-                        next_line
-                    )
-
-                    # Veri satırına gelmişsek dur.
-                    if (
-                        cls._looks_like_coordinate_data(
-                            next_normalized
-                        )
-                        or cls._looks_like_numeric_or_pair_line(
-                            next_line
-                        )
-                    ):
-                        break
-
-                    heading_lines.append(
-                        next_line
-                    )
-
-                    # Koordinat başlığı tamamlandıysa
-                    # daha fazla ilerlemeye gerek yok.
-                    if "KOORDINAT" in next_normalized:
-                        break
-
-                return " ".join(
-                    heading_lines
-                )
+        if numbered:
+            return numbered
 
         # -----------------------------------------------------
         # KOORDİNAT KELİMESİ İÇEREN BAŞLIK
         # -----------------------------------------------------
 
-        for index, line in enumerate(lines[:20]):
+        for index, line in enumerate(lines):
 
             if cls._looks_like_context_noise_line(line):
                 continue
@@ -442,26 +397,57 @@ class TableClassifier:
             if "KOORDINAT" not in normalized:
                 continue
 
-            # Başlığın bir önceki satıra bölünmüş olma
-            # ihtimalini de hesaba kat.
-            if index > 0:
-                previous = lines[index - 1]
+            if (
+                cls._looks_like_coordinate_data(
+                    normalized
+                )
+                or cls._looks_like_numeric_or_pair_line(
+                    line
+                )
+            ):
+                continue
+
+            previous_parts = []
+
+            for back in range(1, 4):
+                previous_index = index - back
+
+                if previous_index < 0:
+                    break
+
+                previous = lines[previous_index]
+
+                if cls._looks_like_context_noise_line(
+                    previous
+                ):
+                    break
 
                 if (
-                    not cls._looks_like_context_noise_line(
-                        previous
-                    )
-                    and not cls._looks_like_coordinate_data(
+                    cls._looks_like_coordinate_data(
                         cls._normalize(previous)
                     )
-                    and len(previous.strip()) <= 80
-                    and previous.count(",") < 2
-                ):
-                    return (
+                    or cls._looks_like_numeric_or_pair_line(
                         previous
-                        + " "
-                        + line
                     )
+                ):
+                    break
+
+                if (
+                    len(previous.strip()) > 80
+                    or previous.count(",") >= 2
+                ):
+                    break
+
+                previous_parts.append(previous)
+
+            previous_parts.reverse()
+
+            if previous_parts:
+                return (
+                    " ".join(previous_parts)
+                    + " "
+                    + line
+                )
 
             return line
 
@@ -498,6 +484,52 @@ class TableClassifier:
         return " ".join(
             meaningful
         )
+
+    @classmethod
+    def _extract_numbered_caption(cls, lines):
+        """First Tablo/Çizelge caption, including after leading data rows."""
+
+        for index, line in enumerate(lines):
+            if cls._looks_like_context_noise_line(line):
+                continue
+
+            normalized = cls._normalize(line)
+
+            if not cls.NUMBERED_TABLE_CAPTION_PATTERN.match(
+                normalized
+            ):
+                continue
+
+            heading_lines = [line]
+
+            for next_line in lines[index + 1:index + 4]:
+                if cls._looks_like_context_noise_line(
+                    next_line
+                ):
+                    break
+
+                next_normalized = cls._normalize(
+                    next_line
+                )
+
+                if (
+                    cls._looks_like_coordinate_data(
+                        next_normalized
+                    )
+                    or cls._looks_like_numeric_or_pair_line(
+                        next_line
+                    )
+                ):
+                    break
+
+                heading_lines.append(next_line)
+
+                if "KOORDINAT" in next_normalized:
+                    break
+
+            return " ".join(heading_lines)
+
+        return ""
 
     @classmethod
     def _classify_prefix_hint(
@@ -645,16 +677,12 @@ class TableClassifier:
         cls,
         table_text: str,
     ) -> bool:
-        for line in table_text.splitlines()[:20]:
-            if cls._looks_like_context_noise_line(line):
-                continue
-
-            if cls.NUMBERED_TABLE_CAPTION_PATTERN.match(
-                cls._normalize(line)
-            ):
-                return True
-
-        return False
+        lines = [
+            line.strip()
+            for line in table_text.splitlines()
+            if line.strip()
+        ]
+        return bool(cls._extract_numbered_caption(lines))
 
     @classmethod
     def _is_headerless_continuation(

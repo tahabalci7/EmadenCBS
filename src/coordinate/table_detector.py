@@ -167,7 +167,8 @@ class TableDetector:
                     and page_number
                     == current_page_number + 1
                     and cls._page_is_table_continuation(
-                        page_lines
+                        page_lines,
+                        open_table_lines=current,
                     )
                 )
 
@@ -222,15 +223,22 @@ class TableDetector:
                     lines,
                     following_start,
                 ):
-                    if current:
-                        cls._append_candidate(
-                            tables,
-                            current,
+                    if cls._should_fold_late_caption(
+                        current
+                    ):
+                        current.extend(
+                            heading_lines
                         )
+                    else:
+                        if current:
+                            cls._append_candidate(
+                                tables,
+                                current,
+                            )
 
-                    current = list(
-                        heading_lines
-                    )
+                        current = list(
+                            heading_lines
+                        )
 
                     in_table = True
                     index += len(
@@ -257,9 +265,20 @@ class TableDetector:
                     index - 1
                 ].upper()
 
+            lookback_lines = (
+                cls._preceding_area_heading_lines(
+                    lines,
+                    index,
+                )
+            )
+            lookback_text = " ".join(
+                lookback_lines
+            )
+
             if cls._looks_like_table_start(
                 upper,
                 previous_upper,
+                lookback_text,
             ):
                 if (
                     in_table
@@ -267,49 +286,25 @@ class TableDetector:
                     and not cls._looks_like_table_number(
                         upper
                     )
-                    and cls._current_has_numbered_heading(
-                        current
+                    and (
+                        cls._current_has_numbered_heading(
+                            current
+                        )
+                        or cls._should_fold_late_caption(
+                            current
+                        )
                     )
                 ):
                     current.append(line)
                     index += 1
                     continue
 
-                heading_lines = [
+                heading_lines = list(
+                    lookback_lines
+                )
+                heading_lines.append(
                     line
-                ]
-
-                if index > 0:
-                    previous_line = lines[
-                        index - 1
-                    ]
-
-                    previous_upper = (
-                        previous_line.upper()
-                    )
-
-                    previous_looks_like_prose = (
-                        len(previous_line) > 80
-                        or previous_line.count(",") >= 2
-                    )
-
-                    if (
-                        any(
-                            keyword
-                            in previous_upper
-                            for keyword
-                            in cls.AREA_HEADING_PREFIX_KEYWORDS
-                        )
-                        and not re.search(
-                            r"\d{5,}",
-                            previous_upper,
-                        )
-                        and not previous_looks_like_prose
-                    ):
-                        heading_lines.insert(
-                            0,
-                            previous_line,
-                        )
+                )
 
                 if current:
                     cls._append_candidate(
@@ -483,8 +478,238 @@ class TableDetector:
     def _current_has_numbered_heading(cls, lines):
         return any(
             cls._looks_like_table_number(line.upper())
-            for line in lines[:8]
+            for line in lines
         )
+
+    @classmethod
+    def _should_fold_late_caption(cls, lines):
+        """Headerless UTM rows on this table are the body of a caption
+        that PDF reading order emitted after the coordinates."""
+
+        if not lines:
+            return False
+
+        if cls._current_has_numbered_heading(lines):
+            return False
+
+        return cls._block_has_utm_pairs(lines)
+
+    LABEL_SERIES_PATTERNS = (
+        re.compile(
+            r"^([A-ZÇĞİÖŞÜ]+)\.?(\d+)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^([A-ZÇĞİÖŞÜ]+)\.?(\d+)\.\d+$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(\d+)$",
+        ),
+    )
+
+    @classmethod
+    def _preceding_area_heading_lines(
+        cls,
+        lines,
+        index,
+        max_lines=3,
+    ):
+        """Split captions such as Yeni ÇED / Alanı / Koordinatları."""
+
+        fragments = []
+        cursor = index - 1
+        scanned = 0
+
+        while cursor >= 0 and scanned < max_lines:
+            line = str(lines[cursor]).strip()
+            cursor -= 1
+
+            if not line:
+                continue
+
+            scanned += 1
+            upper = line.upper()
+
+            if cls.PAGE_MARKER_PATTERN.fullmatch(line):
+                break
+
+            if cls._looks_like_table_number(upper):
+                break
+
+            if TableClassifier._looks_like_context_noise_line(
+                line
+            ):
+                break
+
+            if TableClassifier._looks_like_coordinate_data(
+                TableClassifier._normalize(line)
+            ) or TableClassifier._looks_like_numeric_or_pair_line(
+                line
+            ):
+                break
+
+            if (
+                len(line) > 80
+                or line.count(",") >= 2
+                or re.search(r"\d{5,}", upper)
+            ):
+                break
+
+            fragments.append(line)
+
+        fragments.reverse()
+        haystack = " ".join(fragments).upper()
+
+        if not any(
+            keyword in haystack
+            for keyword in cls.AREA_HEADING_PREFIX_KEYWORDS
+        ):
+            return []
+
+        return fragments
+
+    @classmethod
+    def _prefix_belongs_to_upcoming_heading(
+        cls,
+        open_table_lines,
+        prefix_lines,
+        page_lines,
+        heading_index,
+        prefix_points,
+    ):
+        """Reading-order inversion: a new table's body before its caption.
+
+        Leftover rows of the open table (same label series, or fewer than
+        a ring) still continue. A complete new ring plus a different
+        area-type caption is that caption's table, not STOK/CED bleed.
+        """
+
+        if len(prefix_points) < 3:
+            return False
+
+        open_type = TableClassifier.classify(
+            "\n".join(open_table_lines)
+        )
+        upcoming_type = cls._heading_area_type_at(
+            page_lines,
+            heading_index,
+        )
+
+        if (
+            upcoming_type == "DIGER"
+            or open_type == "DIGER"
+            or upcoming_type == open_type
+        ):
+            return False
+
+        if cls._labels_continue_open_table(
+            open_table_lines,
+            prefix_lines,
+        ):
+            return False
+
+        return True
+
+    @classmethod
+    def _heading_area_type_at(
+        cls,
+        page_lines,
+        heading_index,
+    ):
+        if heading_index is None or heading_index >= len(
+            page_lines
+        ):
+            return "DIGER"
+
+        line = page_lines[heading_index]
+        upper = line.upper()
+
+        if cls._looks_like_table_number(upper):
+            heading_lines = cls._collect_heading_lines(
+                page_lines,
+                heading_index,
+            )
+            return TableClassifier.classify(
+                "\n".join(heading_lines)
+            )
+
+        lookback = cls._preceding_area_heading_lines(
+            page_lines,
+            heading_index,
+        )
+        heading_lines = list(lookback)
+        heading_lines.append(line)
+        return TableClassifier.classify(
+            "\n".join(heading_lines)
+        )
+
+    @classmethod
+    def _labels_continue_open_table(
+        cls,
+        open_table_lines,
+        prefix_lines,
+    ):
+        open_series = cls._point_label_series(
+            open_table_lines
+        )
+        prefix_series = cls._point_label_series(
+            prefix_lines
+        )
+
+        if not open_series or not prefix_series:
+            return False
+
+        open_stem, open_number = open_series[-1]
+        prefix_stem, prefix_number = prefix_series[0]
+
+        if open_stem != prefix_stem:
+            return False
+
+        return prefix_number > open_number
+
+    @classmethod
+    def _point_label_series(cls, lines):
+        points = parse_coordinate_blocks(
+            "KOORDINAT TABLOSU\n"
+            + "\n".join(lines)
+        )
+        series = []
+
+        for point in points:
+            parsed = cls._parse_label_series(
+                point.get("label", "")
+            )
+            if parsed is not None:
+                series.append(parsed)
+
+        return series
+
+    @classmethod
+    def _parse_label_series(cls, label):
+        text = str(label).strip()
+
+        if not text:
+            return None
+
+        for pattern in cls.LABEL_SERIES_PATTERNS:
+            match = pattern.fullmatch(text)
+            if match is None:
+                continue
+
+            if match.lastindex == 1:
+                return (
+                    "",
+                    int(match.group(1)),
+                )
+
+            return (
+                match.group(1).upper(),
+                int(match.group(2)),
+            )
+
+        return None
+
 
     @classmethod
     def _looks_like_table_number(
@@ -616,6 +841,12 @@ class TableDetector:
                 if index > 0
                 else ""
             )
+            lookback_text = " ".join(
+                cls._preceding_area_heading_lines(
+                    page_lines,
+                    index,
+                )
+            )
             if cls._looks_like_table_number(upper):
                 heading_lines = cls._collect_heading_lines(
                     page_lines,
@@ -628,6 +859,7 @@ class TableDetector:
             if cls._looks_like_table_start(
                 upper,
                 previous_upper,
+                lookback_text,
             ):
                 return index
         return None
@@ -636,6 +868,7 @@ class TableDetector:
     def _page_is_table_continuation(
         cls,
         page_lines,
+        open_table_lines=None,
     ):
         if not page_lines:
             return False
@@ -672,11 +905,24 @@ class TableDetector:
             + "\n".join(candidate_lines)
         )
 
-        return len(
-            parse_coordinate_blocks(
-                candidate_text
+        prefix_points = parse_coordinate_blocks(
+            candidate_text
+        )
+
+        if (
+            heading_index is not None
+            and open_table_lines
+            and cls._prefix_belongs_to_upcoming_heading(
+                open_table_lines,
+                candidate_lines,
+                page_lines,
+                heading_index,
+                prefix_points,
             )
-        ) >= 2
+        ):
+            return False
+
+        return len(prefix_points) >= 2
 
     @classmethod
     def _page_has_explicit_coordinate_table(
@@ -692,9 +938,17 @@ class TableDetector:
                     index - 1
                 ].upper()
 
+            lookback_text = " ".join(
+                cls._preceding_area_heading_lines(
+                    page_lines,
+                    index,
+                )
+            )
+
             if cls._looks_like_table_start(
                 upper,
                 previous_upper,
+                lookback_text,
             ):
                 return True
 
@@ -772,6 +1026,7 @@ class TableDetector:
         cls,
         upper_line: str,
         previous_upper: str = "",
+        lookback_text: str = "",
     ) -> bool:
         ignored_column_headings = {
             "UTM KOORDİNATLARI",
@@ -799,16 +1054,23 @@ class TableDetector:
             return False
 
         if clean in split_heading_only:
-            previous_clean = previous_upper.strip()
+            haystack = " ".join(
+                part
+                for part in (
+                    lookback_text,
+                    previous_upper,
+                )
+                if part
+            ).upper()
             return bool(
-                previous_clean
+                haystack
                 and any(
-                    keyword in previous_clean
+                    keyword in haystack
                     for keyword in cls.AREA_HEADING_PREFIX_KEYWORDS
                 )
                 and not re.search(
                     r"\d{5,}",
-                    previous_clean,
+                    haystack,
                 )
             )
 
