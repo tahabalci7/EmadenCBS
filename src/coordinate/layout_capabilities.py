@@ -50,11 +50,12 @@ LAYOUT_CLASSES = (
             "northing_easting_order",
             "unlabeled_pairs",
             "space_dot_comma_thousands",
+            "geographic_only_unlabeled_ring",
         ),
         "contract": (
             "Accepted numeric tokens in Y+X, UTM-only, column-major, "
-            "swapped northing/easting, unlabeled, or grouped-thousands "
-            "forms become points."
+            "swapped northing/easting, unlabeled, grouped-thousands, "
+            "or unlabeled lon/lat-only rings become points."
         ),
     },
     {
@@ -134,6 +135,8 @@ LAYOUT_CLASSES = (
             "keep_distinct_types_on_shared_geometry",
             "report_groups_below_three_vertices",
             "auxiliary_not_inherit_dominant_ring",
+            "parenthetical_ced_is_not_tesisi_type",
+            "geo_ring_not_inherit_auxiliary",
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
@@ -142,7 +145,10 @@ LAYOUT_CLASSES = (
             "reported, not silent. Dedup must not erase RUHSAT when "
             "geometry matches ÇED. An auxiliary ring (STOK/tesis/pasa) "
             "must not inherit a ÇED-scale footprint from a misattached "
-            "or late-caption table."
+            "or late-caption table. A tesisi/stok/ünite caption with "
+            "parenthetical (Talep Edilen ÇED Alanı) stays tesisi/stok; "
+            "a leftover 15-pt geographic ring after Malzeme Stok is ÇED, "
+            "not STOK."
         ),
     },
     {

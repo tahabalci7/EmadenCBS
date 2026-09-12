@@ -422,6 +422,133 @@ def parse_unlabeled_utm_geo_runs(lines, start):
     }
 
 
+def order_standalone_geographic(first, second):
+    """Order a lon/lat pair that has no companion UTM."""
+
+    if first is None or second is None:
+        return None
+
+    if 35 <= first <= 43 and 25 <= second <= 46:
+        return first, second
+
+    if 35 <= second <= 43 and 25 <= first <= 46:
+        return second, first
+
+    return None
+
+
+def parse_standalone_geographic_pair(lines, start):
+    if start >= len(lines):
+        return None
+
+    combined = parse_combined_geographic(lines[start])
+    if combined is not None:
+        if order_utm(combined[0], combined[1]) is not None:
+            return None
+        ordered = order_standalone_geographic(
+            combined[0],
+            combined[1],
+        )
+        if ordered is None:
+            return None
+        return ordered[0], ordered[1], start + 1
+
+    first = _numeric_line_value(lines[start])
+    if first is None:
+        return None
+
+    pos = start + 1
+    if pos < len(lines) and lines[pos].strip() == ":":
+        pos += 1
+    if pos >= len(lines):
+        return None
+
+    second = _numeric_line_value(lines[pos])
+    if second is None:
+        return None
+
+    if order_utm(first, second) is not None:
+        return None
+
+    ordered = order_standalone_geographic(first, second)
+    if ordered is None:
+        return None
+
+    return ordered[0], ordered[1], pos + 1
+
+
+def parse_unlabeled_geographic_runs(lines, start):
+    """Lon/lat-only ring after a UTM table, or a geographic-only table."""
+
+    if start >= len(lines):
+        return None
+
+    geo_pairs = []
+    pos = start
+
+    while pos < len(lines):
+        if is_ignorable_table_context_line(lines[pos]):
+            pos += 1
+            continue
+
+        if is_label(lines[pos], True):
+            if parse_standalone_geographic_pair(lines, pos) is not None:
+                pass
+            elif parse_standalone_geographic_pair(
+                lines,
+                pos + 1,
+            ) is not None:
+                pos += 1
+                continue
+            else:
+                break
+
+        parsed = parse_standalone_geographic_pair(lines, pos)
+        if parsed is None:
+            break
+
+        latitude, longitude, next_pos = parsed
+        geo_pairs.append((latitude, longitude))
+        pos = next_pos
+
+    if len(geo_pairs) < 3:
+        return None
+
+    return {
+        "points": [
+            (None, None, latitude, longitude)
+            for latitude, longitude in geo_pairs
+        ],
+        "consumed": pos - start,
+    }
+
+
+def _is_geographic_only_parsed(parsed):
+    return (
+        parsed.get("utm_y") is None
+        and parsed.get("utm_x") is None
+        and parsed.get("latitude") is not None
+        and parsed.get("longitude") is not None
+    )
+
+
+def _resolve_point_area_type(
+    current_area_type,
+    pending_ced_type,
+    parsed,
+):
+    """A leftover geo ring must not keep the previous STOK/tesis type."""
+
+    if (
+        _is_geographic_only_parsed(parsed)
+        and current_area_type
+        in TableClassifier.AUXILIARY_AREA_TYPES
+    ):
+        return pending_ced_type or "CED_ALANI"
+
+    return current_area_type
+
+
 def parse_point_at(lines, start, allow_numeric_labels):
     if start >= len(lines):
         return None
@@ -638,6 +765,50 @@ def parse_column_major_coordinates(
                     )
 
                 return points
+
+    for n in range(max_n, 2, -1):
+        latlon = ["LAT"] * n + ["LON"] * n
+        lonlat = ["LON"] * n + ["LAT"] * n
+
+        for start in range(0, len(kind_seq) - 2 * n + 1):
+            prefix = kind_seq[start:start + 2 * n]
+            if prefix not in (latlon, lonlat):
+                continue
+            if start + 2 * n < len(kind_seq) and kind_seq[start + 2 * n] in prefix[:1]:
+                continue
+
+            window = list(
+                zip(
+                    kind_seq[start:start + 2 * n],
+                    values[start:start + 2 * n],
+                )
+            )
+            lat_vals = [value for kind, value in window if kind == "LAT"]
+            lon_vals = [value for kind, value in window if kind == "LON"]
+            if len(lat_vals) != n or len(lon_vals) != n:
+                continue
+
+            point_labels = (
+                labels[-n:]
+                if len(labels) >= n
+                else []
+            )
+            points = []
+            for index in range(n):
+                if index < len(point_labels):
+                    label = point_labels[index]
+                else:
+                    label = f"P{index + 1}"
+                points.append(
+                    {
+                        "label": label,
+                        "utm_y": None,
+                        "utm_x": None,
+                        "latitude": lat_vals[index],
+                        "longitude": lon_vals[index],
+                    }
+                )
+            return points
 
     return None
 
@@ -2279,6 +2450,7 @@ def parse_coordinate_blocks(
     current_polygon_group = "DEFAULT"
     current_polygon_heading = ""
     current_area_type = None
+    pending_ced_type = None
     unnamed_point_serial = 0
     pending_area_heading_lines = []
 
@@ -2346,6 +2518,11 @@ def parse_coordinate_blocks(
             current_area_type = (
                 detected_area_type
             )
+            ced_context = TableClassifier.detect_ced_context_type(
+                line
+            )
+            if ced_context is not None:
+                pending_ced_type = ced_context
 
             if is_late_caption_area_heading(line):
                 _retype_trailing_foreign_ring(
@@ -2394,26 +2571,44 @@ def parse_coordinate_blocks(
                     }
                 )
         else:
-            parsed = parse_point_at(
+            geographic_run = parse_unlabeled_geographic_runs(
                 lines,
                 i,
-                allow_numeric_labels,
             )
-            if parsed is not None:
-                consumed = parsed["consumed"]
-                label = parsed["label"]
-                if not label:
+            if geographic_run is not None:
+                consumed = geographic_run["consumed"]
+                for utm_y, utm_x, latitude, longitude in geographic_run["points"]:
                     unnamed_point_serial += 1
-                    label = f"P{unnamed_point_serial}"
-                parsed_points.append(
-                    {
-                        "label": label,
-                        "utm_y": parsed["utm_y"],
-                        "utm_x": parsed["utm_x"],
-                        "latitude": parsed["latitude"],
-                        "longitude": parsed["longitude"],
-                    }
+                    parsed_points.append(
+                        {
+                            "label": f"P{unnamed_point_serial}",
+                            "utm_y": utm_y,
+                            "utm_x": utm_x,
+                            "latitude": latitude,
+                            "longitude": longitude,
+                        }
+                    )
+            else:
+                parsed = parse_point_at(
+                    lines,
+                    i,
+                    allow_numeric_labels,
                 )
+                if parsed is not None:
+                    consumed = parsed["consumed"]
+                    label = parsed["label"]
+                    if not label:
+                        unnamed_point_serial += 1
+                        label = f"P{unnamed_point_serial}"
+                    parsed_points.append(
+                        {
+                            "label": label,
+                            "utm_y": parsed["utm_y"],
+                            "utm_x": parsed["utm_x"],
+                            "latitude": parsed["latitude"],
+                            "longitude": parsed["longitude"],
+                        }
+                    )
 
         if not parsed_points:
             value = str(line).strip()
@@ -2480,7 +2675,11 @@ def parse_coordinate_blocks(
                 "longitude": parsed["longitude"],
                 "polygon_group": polygon_group,
                 "polygon_heading": polygon_heading,
-                "table_type_override": current_area_type,
+                "table_type_override": _resolve_point_area_type(
+                    current_area_type,
+                    pending_ced_type,
+                    parsed,
+                ),
                 "source_page": source_page,
                 "source_method": source_method,
             }
@@ -2490,6 +2689,8 @@ def parse_coordinate_blocks(
                 point["label"],
                 point["utm_y"],
                 point["utm_x"],
+                point.get("latitude"),
+                point.get("longitude"),
             )
 
             if key not in seen:
@@ -2511,6 +2712,7 @@ def parse_coordinate_blocks(
         current_polygon_group = "DEFAULT"
         current_polygon_heading = ""
         current_area_type = None
+        pending_ced_type = None
 
         for line in lines:
             if is_ignorable_table_context_line(line):
@@ -2518,6 +2720,9 @@ def parse_coordinate_blocks(
             detected_area_type = detect_area_type(line)
             if detected_area_type is not None:
                 current_area_type = detected_area_type
+            ced_context = TableClassifier.detect_ced_context_type(line)
+            if ced_context is not None:
+                pending_ced_type = ced_context
             detected_group = detect_polygon_group(line)
             if detected_group is None:
                 detected_group = detect_generic_area_heading(line)
@@ -2553,7 +2758,11 @@ def parse_coordinate_blocks(
                 "longitude": parsed["longitude"],
                 "polygon_group": polygon_group,
                 "polygon_heading": polygon_heading,
-                "table_type_override": current_area_type,
+                "table_type_override": _resolve_point_area_type(
+                    current_area_type,
+                    pending_ced_type,
+                    parsed,
+                ),
                 "source_page": None,
                 "source_method": None,
             }
@@ -2563,6 +2772,8 @@ def parse_coordinate_blocks(
                 point["label"],
                 point["utm_y"],
                 point["utm_x"],
+                point.get("latitude"),
+                point.get("longitude"),
             )
 
             if key in seen:
@@ -2573,6 +2784,17 @@ def parse_coordinate_blocks(
 
     return results
 def detect_area_type(line):
+        raw = str(line)
+        primary = TableClassifier.strip_parentheticals(raw)
+        detected = _detect_area_type_on_text(primary)
+        if detected is not None:
+            return detected
+        if primary.strip() != raw.strip():
+            return _detect_area_type_on_text(raw)
+        return None
+
+
+def _detect_area_type_on_text(line):
         normalized = (
             str(line).upper()
             .replace("İ", "I")
@@ -2703,9 +2925,30 @@ def detect_area_type(line):
         if (
             "KIRMA" in normalized
             and "ELEME" in normalized
-            and "ALAN" in normalized
+            and (
+                "ALAN" in normalized
+                or (
+                    "TESIS" in normalized
+                    and "KOORDINAT" in normalized
+                )
+            )
         ):
             return "KIRMA_ELEME_ALANI"
+
+        if (
+            (
+                "UNITESI" in normalized
+                or re.search(r"\bUNITE\b", normalized)
+            )
+            and "KOORDINAT" in normalized
+        ):
+            return "TESIS_ALANI"
+
+        if (
+            "TESISI" in normalized
+            and "KOORDINAT" in normalized
+        ):
+            return "TESIS_ALANI"
 
         if (
             "ATIK" in normalized

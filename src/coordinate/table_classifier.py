@@ -26,6 +26,17 @@ class TableClassifier:
         heading = cls._extract_heading(table_text)
 
         normalized = cls._normalize(heading)
+        primary_normalized = cls._normalize(
+            cls.strip_parentheticals(heading)
+        )
+
+        # Parenthetical "(Talep Edilen ÇED Alanı)" on a tesisi/stok
+        # caption is section context, not the table's area type.
+        auxiliary = cls._classify_auxiliary_primary(
+            primary_normalized
+        )
+        if auxiliary != "DIGER":
+            return auxiliary
 
         # -----------------------------------------------------
         # 1. ÇALIŞMA YAPILMAYACAK / KORUNACAK ALAN
@@ -234,6 +245,7 @@ class TableClassifier:
             [
                 "KIRMA ELEME TESIS ALANI",
                 "KIRMA ELEME TESISI ALANI",
+                "KIRMA ELEME TESISI",
                 "KIRMA ELEME ALANI",
                 "KIRMA ELEME YIKAMA TESISI",
                 "KIRMA ELEME YIKAMA TESIS ALANI",
@@ -244,6 +256,21 @@ class TableClassifier:
             ],
         ):
             return "KIRMA_ELEME_ALANI"
+
+        if (
+            (
+                "UNITESI" in normalized
+                or re.search(r"\bUNITE\b", normalized)
+            )
+            and "KOORDINAT" in normalized
+        ):
+            return "TESIS_ALANI"
+
+        if (
+            "TESISI" in normalized
+            and "KOORDINAT" in normalized
+        ):
+            return "TESIS_ALANI"
 
         if cls._contains_any(
             normalized,
@@ -347,9 +374,164 @@ class TableClassifier:
         r"^(?:NIHAI\s+)?CED\s+RAPORU$"
     )
 
+    PARENTHETICAL_PATTERN = re.compile(r"\([^)]*\)")
+
+    AUXILIARY_AREA_TYPES = frozenset(
+        {
+            "STOK_ALANI",
+            "TESIS_ALANI",
+            "KIRMA_ELEME_ALANI",
+            "PASA_ALANI",
+            "HAVUZ_ALANI",
+            "SANTIYE_ALANI",
+            "BITKISEL_TOPRAK_ALANI",
+            "ATIK_ALANI",
+            "CEVHER_HAZIRLAMA_ALANI",
+            "DEPOLAMA_ALANI",
+            "GALERI_ALANI",
+            "OCAK_ALANI",
+        }
+    )
+
+    DOMINANT_AREA_TYPES = frozenset(
+        {
+            "RUHSAT_ALANI",
+            "PROJE_ALANI",
+            "ISLETME_IZIN_ALANI",
+            "CED_ALANI",
+            "YENI_CED_ALANI",
+            "MEVCUT_CED_ALANI",
+        }
+    )
+
     # ---------------------------------------------------------
     # TABLO BAŞLIĞINI BUL
     # ---------------------------------------------------------
+
+    @classmethod
+    def strip_parentheticals(cls, text: str) -> str:
+        """Remove (...) phrases so tesisi/stok nouns beat ÇED context."""
+
+        return cls.PARENTHETICAL_PATTERN.sub(" ", str(text or ""))
+
+    @classmethod
+    def detect_ced_context_type(cls, text: str):
+        """ÇED phrase anywhere on the line, including parentheticals."""
+
+        normalized = cls._normalize(text)
+        if "CED" not in normalized:
+            return None
+
+        if not cls._contains_any(
+            normalized,
+            [
+                "ALAN",
+                "SAHA",
+                "SINIR",
+                "KOORDINAT",
+                "POLIGON",
+                "IZIN",
+            ],
+        ):
+            return None
+
+        if re.search(r"\bMEVCUT\b", normalized):
+            return "MEVCUT_CED_ALANI"
+
+        if (
+            re.search(r"\bYENI\b", normalized)
+            or cls._contains_any(
+                normalized,
+                [
+                    "TALEP EDILEN",
+                    "PROJEYE KONU",
+                    "PLANLANAN",
+                    "ONGORULEN",
+                ],
+            )
+        ):
+            return "YENI_CED_ALANI"
+
+        return "CED_ALANI"
+
+    @classmethod
+    def _classify_auxiliary_primary(cls, normalized_primary: str) -> str:
+        """Type from the caption noun outside parentheticals."""
+
+        if not normalized_primary:
+            return "DIGER"
+
+        if (
+            "STOK" in normalized_primary
+            and "ALAN" in normalized_primary
+        ):
+            return "STOK_ALANI"
+
+        if (
+            "KIRMA" in normalized_primary
+            and "ELEME" in normalized_primary
+            and (
+                "TESIS" in normalized_primary
+                or "ALAN" in normalized_primary
+            )
+            and (
+                "KOORDINAT" in normalized_primary
+                or "ALAN" in normalized_primary
+                or "TABLO" in normalized_primary
+            )
+        ):
+            return "KIRMA_ELEME_ALANI"
+
+        if (
+            (
+                "UNITESI" in normalized_primary
+                or re.search(r"\bUNITE\b", normalized_primary)
+            )
+            and "KOORDINAT" in normalized_primary
+        ):
+            return "TESIS_ALANI"
+
+        if (
+            "TESISI" in normalized_primary
+            and "KOORDINAT" in normalized_primary
+        ):
+            return "TESIS_ALANI"
+
+        return "DIGER"
+
+    @classmethod
+    def table_looks_geographic_primary(cls, table_text: str) -> bool:
+        """True when the slice is a lon/lat table, not UTM saga/yukarı."""
+
+        normalized = cls._normalize(table_text)
+        has_geo_header = cls._contains_any(
+            normalized,
+            [
+                "COGRAFI",
+                "ENLEM",
+                "BOYLAM",
+                "WGS 84",
+                "WGS84",
+            ],
+        )
+        utm_y = 0
+        utm_x = 0
+        geo = 0
+        for line in str(table_text).splitlines():
+            for token in re.findall(r"\d+[.,]?\d*", line):
+                try:
+                    value = float(token.replace(",", "."))
+                except ValueError:
+                    continue
+                if 100000 <= value <= 999999:
+                    utm_y += 1
+                elif 3000000 <= value <= 5000000:
+                    utm_x += 1
+                elif 35 <= value <= 43 or 25 <= value <= 46:
+                    geo += 1
+        if utm_y >= 3 and utm_x >= 3:
+            return False
+        return has_geo_header or geo >= 6
 
     @classmethod
     def _extract_heading(cls, table_text: str) -> str:
@@ -572,7 +754,9 @@ class TableClassifier:
 
             for start in range(len(window)):
                 candidate = cls._normalize(
-                    " ".join(window[start:])
+                    cls.strip_parentheticals(
+                        " ".join(window[start:])
+                    )
                 )
                 hinted = cls._classify_ced_heading(
                     candidate
@@ -589,6 +773,9 @@ class TableClassifier:
         normalized: str,
     ) -> str:
         if "CED" not in normalized:
+            return "DIGER"
+
+        if cls._classify_auxiliary_primary(normalized) != "DIGER":
             return "DIGER"
 
         if not cls._contains_any(
