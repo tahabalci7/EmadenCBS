@@ -165,12 +165,21 @@ class PolygonBuilder:
         seen_geometries = set()
 
         for group in grouped.values():
-            rings = repair_self_intersecting_rings(
+            # Trim the intact group first. Live 15-pt STOK is tesisi plus
+            # an L-shaped 500 m mesh in one ring; repair must not see the
+            # composite before the lattice is dropped.
+            group_points = trim_invented_lattice_composite(
                 group["points"]
+            )
+            if len(group_points) < 3:
+                continue
+
+            rings = repair_self_intersecting_rings(
+                group_points
             )
 
             if not rings:
-                rings = [group["points"]]
+                rings = [group_points]
 
             for points in rings:
                 points = trim_invented_lattice_composite(points)

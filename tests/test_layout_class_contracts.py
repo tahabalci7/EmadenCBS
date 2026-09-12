@@ -1521,6 +1521,91 @@ class GroupingTypingClassTests(unittest.TestCase):
             "live extract_pipeline must not emit a ~99 ha composite",
         )
 
+    def test_live_l_shaped_500m_mesh_plus_tesisi_is_not_99ha_stok(self):
+        """Destekci dump on 1558526: y/x are UTM metres (not lon/lat).
+
+        L-shaped partial grid 387500×{4435500,4436000,4436500} +
+        {388000,388500,389000}×4435500 (6 of 12 cartesian cells) mixed
+        with tesisi. filled (len>=0.6*12) is False; must still drop.
+        """
+
+        lattice = (
+            (387500.0, 4435500.0),
+            (387500.0, 4436000.0),
+            (387500.0, 4436500.0),
+        )
+        tesisi = (
+            (388232.569, 4436312.521),
+            (388266.12, 4436109.12),
+            (388266.12, 4436164.80),
+            (388232.5696, 4436164.80),
+            (388204.00, 4436136.00),
+            (388240.00, 4436136.00),
+            (388250.00, 4436120.00),
+            (388220.00, 4436150.00),
+            (388245.00, 4436140.00),
+        )
+        lattice_tail = (
+            (389000.0, 4435500.0),
+            (388500.0, 4435500.0),
+            (388000.0, 4435500.0),
+        )
+        coordinates = []
+        for index, (easting, northing) in enumerate(
+            lattice + tesisi + lattice_tail
+        ):
+            coordinates.append(
+                {
+                    "name": f"P{index}",
+                    "y": easting,
+                    "x": northing,
+                    "transformed_longitude": 31.68057,
+                    "transformed_latitude": 40.06058,
+                    "table_type": "STOK_ALANI",
+                    "section": "Malzeme Stok Alanı",
+                    "table_index": 5,
+                    "polygon_group": "DEFAULT",
+                }
+            )
+
+        self.assertEqual(len(coordinates), 15)
+        polygons = PolygonBuilder.build(coordinates)
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        self.assertLess(
+            max(stok_areas or [0]),
+            2.0,
+            "L-shaped 500 m mesh + tesisi must not stay a ~99 ha STOK",
+        )
+        self.assertLess(
+            max((polygon["area_ha"] for polygon in polygons), default=0),
+            2.0,
+            "no ~99 ha placemark of any type",
+        )
+        remaining = [
+            (point["y"], point["x"])
+            for polygon in polygons
+            for point in polygon["points"]
+        ]
+        self.assertFalse(
+            any(
+                abs(easting - 387500) < 2 and abs(northing - 4435500) < 2
+                for easting, northing in remaining
+            ),
+            "L-grid corner 387500/4435500 must not remain",
+        )
+
+        model = ProjectModel("witness.pdf", coordinates, polygons, [])
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "live-l-stok.kml")
+            KMLExporter.export(model, path)
+            kml_text = Path(path).read_text(encoding="utf-8")
+        self.assertNotRegex(kml_text, r"9[0-9]\.\d{4} ha")
+        self.assertNotRegex(kml_text, r"1[0-4]\d\.\d{4} ha")
+
 
 
 class MetadataKmlNamingClassTests(unittest.TestCase):

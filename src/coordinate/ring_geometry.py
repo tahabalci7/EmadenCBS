@@ -158,12 +158,53 @@ def _bbox_area(pairs):
     )
 
 
+def _is_partial_axis_mesh(
+    lattice_pairs,
+    step_e,
+    origin_e,
+    step_n,
+    origin_n,
+):
+    """L-shaped / framed mesh: verts sit on two perpendicular grid axes.
+
+    Destekci live STOK (1558526): 387500×{4435500,4436000,4436500} plus
+    {388000,388500,389000}×4435500. unique_e=4, unique_n=3, cartesian=12,
+    occupied=6 < 0.6×12, so a filled-product check misses the ring.
+    """
+
+    if len(lattice_pairs) < 6:
+        return False
+
+    columns = {}
+    rows = {}
+    cells = []
+    for easting, northing in lattice_pairs:
+        cell_e = round((easting - origin_e) / step_e)
+        cell_n = round((northing - origin_n) / step_n)
+        cells.append((cell_e, cell_n))
+        columns[cell_e] = columns.get(cell_e, 0) + 1
+        rows[cell_n] = rows.get(cell_n, 0) + 1
+
+    if max(columns.values()) < 3 or max(rows.values()) < 3:
+        return False
+
+    best_column = max(columns, key=columns.get)
+    best_row = max(rows, key=rows.get)
+    on_axes = sum(
+        1
+        for cell_e, cell_n in cells
+        if cell_e == best_column or cell_n == best_row
+    )
+    return on_axes >= 0.8 * len(cells)
+
+
 def trim_invented_lattice_composite(points):
     """Drop a regular metre lattice mixed into a compact real cluster.
 
     Destekci class: tesisi verts plus a 500 m grid that is not in the
-    PDF text, exported as one ~99 ha STOK ring. Live process_pdf often
-    stores that ring as lon/lat in y/x; invert to UTM before trimming.
+    PDF text, exported as one ~99 ha STOK ring. Accepts a filled
+    cartesian product *or* an L-shaped / framed partial mesh. Points
+    must be dicts with y/x (live PolygonBuilder rings), not raw tuples.
     """
 
     if len(points) < 6:
@@ -219,18 +260,30 @@ def trim_invented_lattice_composite(points):
         and unique_e >= 3
         and unique_n >= 3
     )
+    partial = (
+        unique_e >= 3
+        and unique_n >= 3
+        and _is_partial_axis_mesh(
+            lattice_pairs,
+            step_e,
+            origin_e,
+            step_n,
+            origin_n,
+        )
+    )
+    regular_mesh = filled or partial
     lattice_area = _bbox_area(lattice_pairs)
     cluster_area = _bbox_area(cluster_pairs)
 
     if (
-        filled
+        regular_mesh
         and len(cluster_indexes) >= 3
         and cluster_area * 10 < lattice_area
     ):
         return [points[index] for index in cluster_indexes]
 
     if (
-        filled
+        regular_mesh
         and len(cluster_indexes) < 3
         and len(lattice_indexes) >= 6
         and lattice_area > 20000
