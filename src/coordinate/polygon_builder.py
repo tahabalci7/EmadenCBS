@@ -1,3 +1,4 @@
+import math
 from collections import OrderedDict
 
 from src.coordinate.ring_geometry import (
@@ -476,15 +477,23 @@ class PolygonBuilder:
         normalized_points = []
 
         for point in points:
-            y = round(
-                float(point["y"]),
-                3,
-            )
-
-            x = round(
-                float(point["x"]),
-                3,
-            )
+            try:
+                y = round(
+                    float(point["y"]),
+                    3,
+                )
+                x = round(
+                    float(point["x"]),
+                    3,
+                )
+            except (TypeError, ValueError):
+                latitude = point.get("transformed_latitude")
+                longitude = point.get("transformed_longitude")
+                if latitude is None or longitude is None:
+                    latitude = point.get("latitude")
+                    longitude = point.get("longitude")
+                y = round(float(longitude), 6)
+                x = round(float(latitude), 6)
 
             normalized_points.append(
                 (
@@ -517,28 +526,77 @@ class PolygonBuilder:
         )
 
     @staticmethod
-    def _calculate_area(points):
+    def _metre_pair(point):
+        try:
+            easting = float(point["y"])
+            northing = float(point["x"])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+        if abs(easting) > 180 or abs(northing) > 180:
+            return easting, northing
+
+        return None
+
+    @staticmethod
+    def _lonlat_pair(point):
+        latitude = point.get("transformed_latitude")
+        longitude = point.get("transformed_longitude")
+        if latitude is None or longitude is None:
+            latitude = point.get("latitude")
+            longitude = point.get("longitude")
+        try:
+            return float(longitude), float(latitude)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _ring_vertices_m(cls, points):
+        metre_pts = []
+        geo_pts = []
+
+        for point in points:
+            metre = cls._metre_pair(point)
+            if metre is not None:
+                metre_pts.append(metre)
+                continue
+            lonlat = cls._lonlat_pair(point)
+            if lonlat is not None:
+                geo_pts.append(lonlat)
+
+        if len(metre_pts) >= 3 and len(metre_pts) >= len(geo_pts):
+            return metre_pts
+
+        if len(geo_pts) >= 3:
+            lat0 = sum(lat for _lon, lat in geo_pts) / len(geo_pts)
+            m_per_deg_lat = 111320.0
+            m_per_deg_lon = 111320.0 * math.cos(math.radians(lat0))
+            return [
+                (lon * m_per_deg_lon, lat * m_per_deg_lat)
+                for lon, lat in geo_pts
+            ]
+
+        return metre_pts
+
+    @classmethod
+    def _calculate_area(cls, points):
         """
-        Shoelace yöntemi ile UTM koordinatlarından
+        Shoelace yöntemi ile UTM veya coğrafi halkadan
         gerçek alanı (m²) hesaplar.
         """
 
-        if len(points) < 3:
+        vertices = cls._ring_vertices_m(points)
+
+        if len(vertices) < 3:
             return 0
 
         area = 0
 
-        for i in range(len(points)):
-            j = (i + 1) % len(points)
-
-            area += (
-                points[i]["y"]
-                * points[j]["x"]
-            )
-
-            area -= (
-                points[j]["y"]
-                * points[i]["x"]
-            )
+        for i in range(len(vertices)):
+            j = (i + 1) % len(vertices)
+            easting_i, northing_i = vertices[i]
+            easting_j, northing_j = vertices[j]
+            area += easting_i * northing_j
+            area -= easting_j * northing_i
 
         return abs(area) / 2

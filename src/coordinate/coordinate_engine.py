@@ -98,6 +98,7 @@ class CoordinateEngine:
         observation_records = []
         previous_table_type = None
         previous_section = None
+        previous_ced_context = None
         document_transform = (
             cls._resolve_transform_crs(
                 DatumDetector.detect(text)
@@ -116,6 +117,17 @@ class CoordinateEngine:
             table_type = TableClassifier.classify(
                 table
             )
+            ced_context = TableClassifier.detect_ced_context_type(
+                table
+            )
+            if ced_context is not None:
+                previous_ced_context = ced_context
+            elif table_type in {
+                "RUHSAT_ALANI",
+                "PROJE_ALANI",
+                "ISLETME_IZIN_ALANI",
+            }:
+                previous_ced_context = None
 
             if TableClassifier._is_headerless_continuation(
                 table
@@ -124,7 +136,18 @@ class CoordinateEngine:
                     table_type == "DIGER"
                     and previous_table_type
                 ):
-                    table_type = previous_table_type
+                    if (
+                        previous_table_type
+                        in TableClassifier.AUXILIARY_AREA_TYPES
+                    ):
+                        if previous_ced_context:
+                            table_type = previous_ced_context
+                        elif TableClassifier.table_looks_geographic_primary(
+                            table
+                        ):
+                            table_type = "CED_ALANI"
+                    else:
+                        table_type = previous_table_type
 
                 if (
                     previous_section
@@ -269,6 +292,8 @@ class CoordinateEngine:
                     point["label"],
                     point["utm_y"],
                     point["utm_x"],
+                    point.get("latitude"),
+                    point.get("longitude"),
                 )
 
                 if key in seen:
@@ -444,8 +469,16 @@ class CoordinateEngine:
             # ---------------------------------------------
 
             "name": point["label"],
-            "y": point["utm_y"],
-            "x": point["utm_x"],
+            "y": (
+                point["utm_y"]
+                if point["utm_y"] is not None
+                else point.get("longitude")
+            ),
+            "x": (
+                point["utm_x"]
+                if point["utm_x"] is not None
+                else point.get("latitude")
+            ),
             "latitude": point[
                 "latitude"
             ],
@@ -497,6 +530,22 @@ class CoordinateEngine:
             "transformed_longitude": None,
             "transformed_latitude": None,
         }
+
+        if (
+            point.get("utm_y") is None
+            or point.get("utm_x") is None
+        ):
+            if (
+                point.get("longitude") is not None
+                and point.get("latitude") is not None
+            ):
+                metadata["transformed_longitude"] = point[
+                    "longitude"
+                ]
+                metadata["transformed_latitude"] = point[
+                    "latitude"
+                ]
+            return metadata
 
         if projected_crs is None:
             return metadata

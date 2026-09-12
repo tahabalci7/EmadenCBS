@@ -41,9 +41,11 @@ from src.coordinate.ring_geometry import (
     _resolve_lonlat_leftover,
 )
 from src.coordinate.state_machine import (
+    detect_area_type,
     parse_coordinate_blocks,
     parse_localized_number,
 )
+from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.table_detector import TableDetector
 from src.export.kml_exporter import KMLExporter
 from src.project.project_info_extractor import ProjectInfoExtractor
@@ -251,6 +253,18 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "auxiliary_not_inherit_dominant_ring",
             layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "parenthetical_ced_is_not_tesisi_type",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "geo_ring_not_inherit_auxiliary",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "geographic_only_unlabeled_ring",
+            layout_class("coordinate_record_layouts")["capabilities"],
         )
 
     def test_extract_coordinates_still_returns_a_list(self):
@@ -1034,6 +1048,207 @@ class GroupingTypingClassTests(unittest.TestCase):
             polygons=polygons,
         )
         self.assertIn(GROUP_BELOW_POLYGON_SIZE, reason_codes(diagnostics))
+
+    def test_parenthetical_ced_does_not_retype_tesisi_or_stok_headings(self):
+        self.assertEqual(
+            detect_area_type(
+                "Tablo 1  Kırma-Eleme Tesisi Koordinatları "
+                "(Talep Edilen ÇED Alanı)"
+            ),
+            "KIRMA_ELEME_ALANI",
+        )
+        self.assertEqual(
+            TableClassifier.classify(
+                "Tablo 1  Kırma-Eleme Tesisi Koordinatları "
+                "(Talep Edilen ÇED Alanı)\n"
+                "N1\n434600\n4205200\n"
+            ),
+            "KIRMA_ELEME_ALANI",
+        )
+        self.assertEqual(
+            detect_area_type("Mekanik Çözme Ünitesi Koordinatları"),
+            "TESIS_ALANI",
+        )
+        self.assertEqual(
+            detect_area_type("Malzeme Stok Alanı Koordinatları"),
+            "STOK_ALANI",
+        )
+        self.assertEqual(
+            TableClassifier.detect_ced_context_type(
+                "Kırma-Eleme Tesisi Koordinatları (Talep Edilen ÇED Alanı)"
+            ),
+            "YENI_CED_ALANI",
+        )
+
+    def test_tesisi_malzeme_stok_and_15pt_geo_ring_are_not_inverted(self):
+        """Witness shape (not Tablo-N Stok→Yeni ÇED): facility ÇED
+        parenthetical, Malzeme Stok UTM, then a 15-pt lon/lat ring.
+
+        Destekci on 8e8ba95: max(STOK)=99.4 ha / 15 pts typed STOK,
+        max(YENI_CED)=0.23 ha facility. The large geo ring is ÇED.
+        """
+
+        tesisi_pairs = square_utm(434600, 4205200, 35)
+        tesisi_extra = (
+            (434610, 4205210),
+            (434620, 4205220),
+            (434630, 4205230),
+            (434615, 4205235),
+            (434605, 4205225),
+        )
+        tesisi_pairs = tesisi_pairs + tesisi_extra
+        unite_pairs = square_utm(434700, 4205300, 48)
+        stok_pairs = square_utm(434500, 4205100, 48)
+        stok_extra = (
+            (434510, 4205110),
+            (434520, 4205120),
+            (434530, 4205130),
+            (434515, 4205135),
+        )
+        stok_pairs = stok_pairs + stok_extra
+
+        lon0, lat0 = 31.686, 40.0645
+        dlon, dlat = 0.006, 0.0045
+        geo_lines = []
+        for index in range(15):
+            angle = 2 * math.pi * index / 15
+            latitude = lat0 + dlat * math.sin(angle)
+            longitude = lon0 + dlon * math.cos(angle)
+            geo_lines.extend(
+                (
+                    f"{latitude:.6f}",
+                    f"{longitude:.6f}",
+                )
+            )
+
+        text = "\n".join(
+            [
+                page(
+                    15,
+                    "Tablo 1  Kırma-Eleme Tesisi Koordinatları "
+                    "(Talep Edilen ÇED Alanı)",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"N{i}" for i in range(1, 10)),
+                        tesisi_pairs,
+                    ),
+                    "Mekanik Çözme Ünitesi Koordinatları",
+                    *stacked_utm_lines(
+                        ("U1", "U2", "U3", "U4"),
+                        unite_pairs,
+                    ),
+                ),
+                page(
+                    16,
+                    "Malzeme Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        tuple(f"S{i}" for i in range(1, 9)),
+                        stok_pairs,
+                    ),
+                    *geo_lines,
+                ),
+            ]
+        )
+
+        pipeline = run_coordinate_pipeline(text)
+        polygons = pipeline["polygons"]
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        ced_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"]
+            in {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        ]
+        self.assertTrue(stok_areas, "Malzeme Stok ring missing")
+        self.assertTrue(ced_areas, "15-pt geographic ÇED ring missing")
+        self.assertLess(max(stok_areas), 2.0)
+        self.assertGreater(max(ced_areas), 50.0)
+        self.assertLess(max(stok_areas) * 10, max(ced_areas))
+
+        geo_types = {
+            point["table_type"]
+            for point in pipeline["coordinates"]
+            if point.get("latitude") is not None
+            and point.get("longitude") is not None
+            and (
+                point.get("y") is None
+                or abs(float(point["y"])) <= 180
+            )
+        }
+        self.assertTrue(geo_types)
+        self.assertTrue(
+            geo_types
+            <= {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        )
+        self.assertNotIn("STOK_ALANI", geo_types)
+
+        tesisi_types = {
+            point["table_type"]
+            for point in pipeline["coordinates"]
+            if str(point.get("name", "")).startswith("N")
+        }
+        self.assertTrue(
+            tesisi_types
+            <= {"KIRMA_ELEME_ALANI", "TESIS_ALANI"}
+        )
+
+    def test_headerless_geo_table_after_stok_does_not_inherit_stok(self):
+        """Separate lon/lat table after Malzeme Stok (no Tablo N)."""
+
+        geo_lines = []
+        lon0, lat0 = 31.686, 40.0645
+        for index in range(15):
+            angle = 2 * math.pi * index / 15
+            geo_lines.extend(
+                (
+                    f"{lat0 + 0.0045 * math.sin(angle):.6f}",
+                    f"{lon0 + 0.006 * math.cos(angle):.6f}",
+                )
+            )
+        text = "\n".join(
+            [
+                page(
+                    15,
+                    "Tablo 1  Kırma-Eleme Tesisi Koordinatları "
+                    "(Talep Edilen ÇED Alanı)",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("N1", "N2", "N3", "N4"),
+                        square_utm(434600, 4205200, 35),
+                    ),
+                ),
+                page(
+                    16,
+                    "Malzeme Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("S1", "S2", "S3", "S4"),
+                        square_utm(434500, 4205100, 48),
+                    ),
+                    "Coğrafi Koordinatları",
+                    *geo_lines,
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        ced_areas = [
+            polygon["area_ha"]
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"]
+            in {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        ]
+        self.assertLess(max(stok_areas or [0]), 2.0)
+        self.assertGreater(max(ced_areas or [0]), 50.0)
 
 
 class MetadataKmlNamingClassTests(unittest.TestCase):
