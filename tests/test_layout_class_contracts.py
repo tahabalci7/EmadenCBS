@@ -381,6 +381,115 @@ class TableContinuationClassTests(unittest.TestCase):
             any(label.startswith("C") for label in stok_labels)
         )
 
+    def test_same_page_ced_body_before_caption_is_not_stok(self):
+        """Witness reading order: STOK caption, small ring, large ring,
+        then Tablo N. Yeni ÇED, then a leftover fragment.
+
+        PR #10 only detached this across a page break. Destekci reexport
+        on a65dbfe still had STOK 99.4 ha / 15 pts and Yeni ÇED 0.23 ha.
+        """
+
+        stok_pairs, ced_pairs, leftover_pairs = self._stok_ced_scale_rings()
+        # Witness leftover is 4 verts; keep the large ring at 15.
+        leftover_pairs = leftover_pairs[:4]
+        text = page(
+            1,
+            "Tablo 4. Stok Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"S{i}" for i in range(1, 9)),
+                stok_pairs,
+            ),
+            *stacked_utm_lines(
+                tuple(f"C{i}" for i in range(1, 17)),
+                ced_pairs,
+            ),
+            "Tablo 5. Yeni ÇED Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"Y{i}" for i in range(1, 5)),
+                leftover_pairs,
+            ),
+        )
+        self._assert_stok_ced_not_inverted(text)
+
+    def test_same_page_numeric_restart_before_yeni_ced_caption(self):
+        stok_pairs, ced_pairs, leftover_pairs = self._stok_ced_scale_rings()
+        leftover_pairs = leftover_pairs[:4]
+        text = page(
+            1,
+            "Tablo 4. Stok Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"N{i}" for i in range(1, 9)),
+                stok_pairs,
+            ),
+            *stacked_utm_lines(
+                tuple(f"N{i}" for i in range(1, 17)),
+                ced_pairs,
+            ),
+            "Tablo 5. Yeni ÇED Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"Y{i}" for i in range(1, 5)),
+                leftover_pairs,
+            ),
+        )
+        self._assert_stok_ced_not_inverted(text)
+
+    def test_same_page_unnumbered_ced_heading_after_large_ring(self):
+        stok_pairs, ced_pairs, leftover_pairs = self._stok_ced_scale_rings()
+        leftover_pairs = leftover_pairs[:4]
+        text = page(
+            1,
+            "Tablo 4. Stok Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"S{i}" for i in range(1, 9)),
+                stok_pairs,
+            ),
+            *stacked_utm_lines(
+                tuple(f"C{i}" for i in range(1, 17)),
+                ced_pairs,
+            ),
+            "Yeni ÇED Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"Y{i}" for i in range(1, 5)),
+                leftover_pairs,
+            ),
+        )
+        self._assert_stok_ced_not_inverted(text)
+
+    def _assert_stok_ced_not_inverted(self, text):
+        pipeline = run_coordinate_pipeline(text)
+        polygons = pipeline["polygons"]
+        stok_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"] == "STOK_ALANI"
+        ]
+        ced_areas = [
+            polygon["area_ha"]
+            for polygon in polygons
+            if polygon["table_type"]
+            in {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        ]
+        self.assertTrue(stok_areas, "STOK ring missing")
+        self.assertTrue(ced_areas, "ÇED ring missing")
+        self.assertLess(max(stok_areas), 2.0)
+        self.assertGreater(max(ced_areas), 50.0)
+        self.assertLess(max(stok_areas) * 10, max(ced_areas))
+        stok_labels = {
+            point["name"]
+            for point in pipeline["coordinates"]
+            if point["table_type"] == "STOK_ALANI"
+            and not str(point["name"]).isdigit()
+        }
+        self.assertFalse(
+            any(label.startswith("C") for label in stok_labels)
+        )
+
     def test_split_yeni_ced_heading_is_not_swallowed_by_stok(self):
         stok_pairs, ced_pairs, _leftover = self._stok_ced_scale_rings()
         text = "\n".join(

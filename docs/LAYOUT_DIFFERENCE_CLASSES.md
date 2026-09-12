@@ -27,7 +27,7 @@ coordinates, polygons, and reason codes together.
 
 | Class | Owning modules | Capability |
 | --- | --- | --- |
-| Table continuation / Tip2 | `table_detector`, `table_classifier`, `coordinate_engine` | Headerless next-page rows stay in the same table. `0.9996` / latitudes are not section numbers. A complete new ring before a different-type caption is that caption's table, not continuation. Split `Yeni ÇED / Alanı / Koordinatları` starts a table. |
+| Table continuation / Tip2 | `table_detector`, `table_classifier`, `coordinate_engine` | Headerless next-page rows stay in the same table. `0.9996` / latitudes are not section numbers. A complete new ring before a different-type caption is that caption's table, not continuation — including when those rows were already appended to an open numbered STOK table on the **same page**. Split `Yeni ÇED / Alanı / Koordinatları` starts a table. |
 | Coordinate record layouts | `state_machine` | Y+X+lat+lon, UTM-only, column-major, N/E order, unlabeled pairs, space/dot/comma thousands. |
 | Detector vs parser | `table_detector`, `state_machine`, `pipeline_contract` | Accepted table → points **or** `DETECTED_TABLE_NO_POINTS`. Never silent tables>0 / coords=0. |
 | CRS inheritance | `datum_detector`, `crs_resolver`, `coordinate_engine` | Document or prior-table HIGH CRS supplies WGS84 when the table slice has no Zon. `ED 50` and `Dilim 35–39` are explicit CRS aliases. |

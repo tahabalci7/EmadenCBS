@@ -31,8 +31,10 @@ LAYOUT_CLASSES = (
             "same table. Scale factors and latitudes are not section numbers. "
             "Headerless UTM rows before a same-page caption of a different "
             "area type are that caption's body (reading-order inversion), "
-            "not a continuation of the previous table. Split captions such "
-            "as Yeni ÇED / Alanı / Koordinatları start a new table."
+            "not a continuation of the previous table. This includes rows "
+            "already appended to an open numbered STOK/auxiliary table on "
+            "the same page. Split captions such as Yeni ÇED / Alanı / "
+            "Koordinatları start a new table."
         ),
     },
     {
