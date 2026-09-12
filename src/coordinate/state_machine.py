@@ -1567,6 +1567,156 @@ def parse_row_coordinate(
     }
 
 
+_LABEL_SERIES_PATTERNS = (
+    re.compile(
+        r"^([A-ZÇĞİÖŞÜ]+)\.?(\d+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^([A-ZÇĞİÖŞÜ]+)\.?(\d+)\.\d+$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(\d+)$",
+    ),
+)
+
+
+def _parse_point_label_series(label):
+    text = str(label or "").strip()
+
+    if not text:
+        return None
+
+    for pattern in _LABEL_SERIES_PATTERNS:
+        match = pattern.fullmatch(text)
+
+        if match is None:
+            continue
+
+        if match.lastindex == 1:
+            return (
+                "",
+                int(match.group(1)),
+            )
+
+        return (
+            match.group(1).upper(),
+            int(match.group(2)),
+        )
+
+    return None
+
+
+def trailing_foreign_ring_start(points):
+    """Index where a later ring of a different label series begins.
+
+    Used when the area heading arrives after that ring's vertices
+    (same-page late caption). Does not retype the earlier ring.
+    """
+
+    if len(points) < 6:
+        return None
+
+    parsed = [
+        _parse_point_label_series(
+            point.get("label") or point.get("name")
+        )
+        for point in points
+    ]
+    first = next(
+        (item for item in parsed if item is not None),
+        None,
+    )
+
+    if first is None:
+        return None
+
+    stem, last_number = first
+    seen = 0
+
+    for index, item in enumerate(parsed):
+        if item is None:
+            continue
+
+        seen += 1
+        next_stem, number = item
+
+        if (
+            seen > 3
+            and (
+                next_stem != stem
+                or number <= last_number
+            )
+            and len(points) - index >= 3
+        ):
+            return index
+
+        last_number = number
+
+    return None
+
+
+def is_late_caption_area_heading(line):
+    """Tablo / Koordinatları captions after a ring, not NOLU subheads."""
+
+    value = str(line).strip()
+
+    if not value:
+        return False
+
+    normalized = (
+        value.upper()
+        .replace("İ", "I")
+        .replace("Ş", "S")
+        .replace("Ğ", "G")
+        .replace("Ü", "U")
+        .replace("Ö", "O")
+        .replace("Ç", "C")
+    )
+
+    if re.search(r"\b\d+\s+NO", normalized):
+        return False
+
+    if re.search(
+        r"\b(?:TABLO|CIZELGE|TABLE)\b",
+        normalized,
+    ):
+        return True
+
+    if "KOORDINAT" in normalized:
+        return True
+
+    return False
+
+
+def _retype_trailing_foreign_ring(points, new_area_type):
+    """Retype only a trailing ring that still has the table's first type.
+
+    A later in-table heading (Pasa after ÇED) must not steal the ÇED ring.
+    """
+
+    suffix_start = trailing_foreign_ring_start(points)
+
+    if suffix_start is None:
+        return
+
+    first_type = next(
+        (
+            point.get("table_type_override")
+            for point in points
+            if point.get("table_type_override")
+        ),
+        None,
+    )
+
+    for point in points[suffix_start:]:
+        current = point.get("table_type_override")
+
+        if current in (None, first_type):
+            point["table_type_override"] = new_area_type
+
+
 def parse_coordinate_blocks(
     text: str,
     line_sources=None,
@@ -1975,6 +2125,15 @@ def parse_coordinate_blocks(
                     previous_point[
                         "table_type_override"
                     ] = detected_area_type
+            elif (
+                point is None
+                and segment_has_points
+                and is_late_caption_area_heading(line)
+            ):
+                _retype_trailing_foreign_ring(
+                    results[segment_start_index:],
+                    detected_area_type,
+                )
 
             preserve_explicit_empty_segment = (
                 point is None
@@ -2187,6 +2346,12 @@ def parse_coordinate_blocks(
             current_area_type = (
                 detected_area_type
             )
+
+            if is_late_caption_area_heading(line):
+                _retype_trailing_foreign_ring(
+                    results,
+                    detected_area_type,
+                )
 
             current_polygon_group = "DEFAULT"
             current_polygon_heading = ""

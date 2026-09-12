@@ -223,7 +223,26 @@ class TableDetector:
                     lines,
                     following_start,
                 ):
-                    if cls._should_fold_late_caption(
+                    prefix, suffix = (
+                        cls._split_late_caption_body(
+                            current,
+                            heading_lines,
+                        )
+                    )
+                    if suffix:
+                        if prefix:
+                            cls._append_candidate(
+                                tables,
+                                prefix,
+                            )
+                        cls._append_candidate(
+                            tables,
+                            suffix + heading_lines,
+                        )
+                        current = list(
+                            heading_lines
+                        )
+                    elif cls._should_fold_late_caption(
                         current
                     ):
                         current.extend(
@@ -280,31 +299,54 @@ class TableDetector:
                 previous_upper,
                 lookback_text,
             ):
-                if (
-                    in_table
-                    and current
-                    and not cls._looks_like_table_number(
-                        upper
-                    )
-                    and (
-                        cls._current_has_numbered_heading(
-                            current
-                        )
-                        or cls._should_fold_late_caption(
-                            current
-                        )
-                    )
-                ):
-                    current.append(line)
-                    index += 1
-                    continue
-
                 heading_lines = list(
                     lookback_lines
                 )
                 heading_lines.append(
                     line
                 )
+
+                if (
+                    in_table
+                    and current
+                    and not cls._looks_like_table_number(
+                        upper
+                    )
+                ):
+                    prefix, suffix = (
+                        cls._split_late_caption_body(
+                            current,
+                            heading_lines,
+                        )
+                    )
+                    if suffix:
+                        if prefix:
+                            cls._append_candidate(
+                                tables,
+                                prefix,
+                            )
+                        cls._append_candidate(
+                            tables,
+                            suffix + heading_lines,
+                        )
+                        current = list(
+                            heading_lines
+                        )
+                        in_table = True
+                        index += 1
+                        continue
+
+                    if (
+                        cls._current_has_numbered_heading(
+                            current
+                        )
+                        or cls._should_fold_late_caption(
+                            current
+                        )
+                    ):
+                        current.append(line)
+                        index += 1
+                        continue
 
                 if current:
                     cls._append_candidate(
@@ -493,6 +535,237 @@ class TableDetector:
             return False
 
         return cls._block_has_utm_pairs(lines)
+
+    @classmethod
+    def _split_late_caption_body(
+        cls,
+        lines,
+        upcoming_heading_lines,
+    ):
+        """Detach a trailing ring that belongs to the next caption.
+
+        Same-page reading order often dumps ÇED vertices inside the
+        still-open STOK table, then emits Tablo N. Yeni ÇED. PR #10
+        only stopped page-break continuation; the open numbered table
+        still swallowed those rows.
+        """
+
+        if not lines or not upcoming_heading_lines:
+            return list(lines or []), []
+
+        open_type = TableClassifier.classify(
+            "\n".join(lines)
+        )
+        upcoming_type = TableClassifier.classify(
+            "\n".join(upcoming_heading_lines)
+        )
+
+        if (
+            upcoming_type == "DIGER"
+            or open_type == "DIGER"
+            or upcoming_type == open_type
+        ):
+            return list(lines), []
+
+        points = parse_coordinate_blocks(
+            "\n".join(lines)
+        )
+        break_at = cls._ring_break_index(points)
+
+        if break_at is None:
+            return list(lines), []
+
+        line_index = cls._first_label_line_index(
+            lines,
+            points[break_at],
+        )
+
+        if line_index is None:
+            return list(lines), []
+
+        prefix = list(lines[:line_index])
+        suffix = list(lines[line_index:])
+
+        if not cls._block_has_utm_pairs(suffix):
+            return list(lines), []
+
+        if prefix and not cls._block_has_utm_pairs(prefix):
+            return [], list(lines)
+
+        return prefix, suffix
+
+    @classmethod
+    def _ring_break_index(cls, points):
+        if len(points) < 6:
+            return None
+
+        series_break = cls._label_series_break(points)
+
+        if series_break is not None:
+            return series_break
+
+        return cls._area_scale_break(points)
+
+    @classmethod
+    def _label_series_break(cls, points):
+        parsed = [
+            cls._parse_label_series(point.get("label", ""))
+            for point in points
+        ]
+        first = next(
+            (item for item in parsed if item is not None),
+            None,
+        )
+
+        if first is None:
+            return None
+
+        stem, last_number = first
+        seen = 0
+
+        for index, item in enumerate(parsed):
+            if item is None:
+                continue
+
+            seen += 1
+            next_stem, number = item
+
+            if (
+                seen > 3
+                and (
+                    next_stem != stem
+                    or number <= last_number
+                )
+                and len(points) - index >= 3
+            ):
+                return index
+
+            last_number = number
+
+        return None
+
+    @classmethod
+    def _area_scale_break(cls, points):
+        """Split when a finished small ring is followed by a ≫ ring.
+
+        Used when labels are one numeric series (1..n) across two
+        physical polygons. Require both sides to have real hectare-scale
+        area so a single ÇED ring is not sliced at the first three verts.
+        """
+
+        def shoelace(items):
+            if len(items) < 3:
+                return 0.0
+
+            area = 0.0
+
+            for index in range(len(items)):
+                nxt = (index + 1) % len(items)
+                area += (
+                    float(items[index]["utm_y"])
+                    * float(items[nxt]["utm_x"])
+                )
+                area -= (
+                    float(items[nxt]["utm_y"])
+                    * float(items[index]["utm_x"])
+                )
+
+            return abs(area) / 2.0
+
+        count = len(points)
+        minimum_area = 500.0
+        best_index = None
+        best_ratio = 10.0
+        previous_area = None
+        plateau = 0
+
+        for index in range(4, count - 2):
+            prefix_area = shoelace(points[:index])
+
+            if (
+                previous_area
+                and previous_area > 0
+                and abs(prefix_area - previous_area) / previous_area < 0.3
+            ):
+                plateau += 1
+            else:
+                plateau = 0
+
+            previous_area = prefix_area
+
+            if plateau < 1:
+                continue
+
+            suffix_area = shoelace(points[index:])
+
+            if (
+                prefix_area < minimum_area
+                or suffix_area < minimum_area
+            ):
+                continue
+
+            ratio = max(prefix_area, suffix_area) / min(
+                prefix_area,
+                suffix_area,
+            )
+
+            if ratio >= best_ratio:
+                best_ratio = ratio
+                best_index = index
+
+        return best_index
+
+    @classmethod
+    def _first_label_line_index(cls, lines, point):
+        label = str(point.get("label", "")).strip()
+
+        if not label:
+            return None
+
+        easting = point.get("utm_y")
+
+        try:
+            easting = float(easting)
+        except (TypeError, ValueError):
+            easting = None
+
+        for index, line in enumerate(lines):
+            value = str(line).strip()
+            tokens = value.split()
+
+            if value == label:
+                if (
+                    easting is None
+                    or cls._nearby_easting(lines, index, easting)
+                ):
+                    return index
+                continue
+
+            if tokens and tokens[0] == label:
+                if easting is None:
+                    return index
+
+                for token in tokens[1:]:
+                    try:
+                        if abs(float(token.replace(",", ".")) - easting) < 0.6:
+                            return index
+                    except ValueError:
+                        continue
+
+        return None
+
+    @classmethod
+    def _nearby_easting(cls, lines, label_index, easting):
+        for line in lines[label_index + 1:label_index + 4]:
+            value = str(line).strip()
+
+            try:
+                if abs(float(value.replace(",", ".")) - easting) < 0.6:
+                    return True
+            except ValueError:
+                continue
+
+        return False
 
     LABEL_SERIES_PATTERNS = (
         re.compile(
