@@ -184,6 +184,8 @@ def inspect_kml_polygons(polygons):
 
     diagnostics = []
     for polygon in polygons or []:
+        if polygon.get("geometry_type") == "POINT":
+            continue
         texts = KMLExporter._build_coordinate_texts(polygon)
         table_type = polygon.get("table_type", "DIGER")
         polygon_group = polygon.get("polygon_group", "DEFAULT")

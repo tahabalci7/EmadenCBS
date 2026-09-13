@@ -8,6 +8,7 @@ import math
 import os
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from src.coordinate.coordinate_engine import CoordinateEngine
@@ -2056,27 +2057,30 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
         self.assertEqual(len(giris_points), 7)
 
         pipeline = run_coordinate_pipeline(text)
-        types = {
-            polygon["table_type"]
-            for polygon in pipeline["polygons"]
-        }
-        self.assertIn("RUHSAT_ALANI", types)
-        self.assertNotIn("GALERI_ALANI", types)
-        self.assertNotIn("GALERI_GIRIS", types)
         ruhsat = [
-            polygon
-            for polygon in pipeline["polygons"]
-            if polygon["table_type"] == "RUHSAT_ALANI"
+            feature
+            for feature in pipeline["polygons"]
+            if feature["table_type"] == "RUHSAT_ALANI"
+            and feature.get("geometry_type", "POLYGON") == "POLYGON"
+        ]
+        giris = [
+            feature
+            for feature in pipeline["polygons"]
+            if feature.get("geometry_type") == "POINT"
+            and feature["table_type"] in {"GALERI_GIRIS", "GALERI_ALANI"}
+        ]
+        galeri_area = [
+            feature
+            for feature in pipeline["polygons"]
+            if feature.get("geometry_type", "POLYGON") == "POLYGON"
+            and feature["table_type"] in {"GALERI_ALANI", "GALERI_GIRIS"}
+            and feature["area_ha"] > 100
         ]
         self.assertEqual(len(ruhsat), 1)
         self.assertEqual(ruhsat[0]["point_count"], 6)
         self.assertAlmostEqual(ruhsat[0]["area_ha"], 1849.19, delta=2.0)
-        galeri_area = [
-            polygon
-            for polygon in pipeline["polygons"]
-            if polygon["table_type"] == "GALERI_ALANI"
-            and polygon["area_ha"] > 100
-        ]
+        self.assertEqual(len(giris), 1)
+        self.assertEqual(giris[0]["point_count"], 7)
         self.assertEqual(galeri_area, [])
 
     def test_stacked_colon_dual_crs_and_gallery_area_still_close(self):
@@ -2121,6 +2125,98 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
             if polygon["table_type"] == "RUHSAT_ALANI"
         ]
         self.assertEqual(ruhsat[0]["point_count"], 6)
+        galeri = [
+            feature
+            for feature in pipeline["polygons"]
+            if feature["table_type"] == "GALERI_ALANI"
+        ]
+        self.assertEqual(len(galeri), 1)
+        self.assertEqual(galeri[0].get("geometry_type", "POLYGON"), "POLYGON")
+
+    def test_page37_appendix_sicil_block_beats_giris_hull(self):
+        """EK-1 appendix page: sicil colon block is ruhsat; giriş is pins."""
+
+        ruhsat_utm = hexagon_utm(751475.0, 4172450.0, 1849.19)
+        text = page(
+            37,
+            "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+            "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+            "DATUM: ED-50              DATUM: WGS-84",
+            "ZON: 36",
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )",
+            *_colon_column_major_rows(
+                ("1", "2", "3", "4", "5", "6"),
+                ruhsat_utm,
+                self.RUHSAT_GEO,
+            ),
+            "Galeri Giriş Koordinatları",
+            *_colon_column_major_rows(
+                ("1", "2", "3", "4", "5", "6", "7"),
+                self.GIRIS_UTM,
+                self.GIRIS_GEO,
+            ),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        area_polygons = [
+            feature
+            for feature in pipeline["polygons"]
+            if feature.get("geometry_type", "POLYGON") == "POLYGON"
+        ]
+        self.assertEqual(
+            [feature["table_type"] for feature in area_polygons],
+            ["RUHSAT_ALANI"],
+        )
+        self.assertAlmostEqual(area_polygons[0]["area_ha"], 1849.19, delta=2.0)
+        self.assertEqual(area_polygons[0]["point_count"], 6)
+
+        model = ProjectModel(
+            pdf_path="appendix.pdf",
+            coordinates=pipeline["coordinates"],
+            polygons=pipeline["polygons"],
+            tables=pipeline["tables"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            kml_path = Path(tmp) / "appendix.kml"
+            KMLExporter.export(model, str(kml_path))
+            tree = ET.parse(kml_path)
+        polygons = tree.findall(".//{http://www.opengis.net/kml/2.2}Polygon")
+        points = tree.findall(".//{http://www.opengis.net/kml/2.2}Point")
+        self.assertEqual(len(polygons), 1)
+        self.assertEqual(len(points), 7)
+
+    def test_large_galeri_hull_without_alani_caption_is_pins(self):
+        """Safety net: a huge GALERI_ALANI hull is pins, not a filled area."""
+
+        spread = (
+            (750000.0, 4168000.0),
+            (753000.0, 4168000.0),
+            (753000.0, 4172000.0),
+            (750000.0, 4172000.0),
+        )
+        self.assertGreater(
+            PolygonBuilder._calculate_area(
+                [{"y": easting, "x": northing} for easting, northing in spread]
+            ),
+            PolygonBuilder.POINT_AREA_M2_THRESHOLD,
+        )
+        self.assertTrue(
+            PolygonBuilder._should_emit_as_pins(
+                "GALERI_ALANI",
+                [{"y": easting, "x": northing} for easting, northing in spread],
+                "Galeri Koordinatları",
+            )
+        )
+        self.assertFalse(
+            PolygonBuilder._should_emit_as_pins(
+                "GALERI_ALANI",
+                [
+                    {"y": easting, "x": northing}
+                    for easting, northing in square_utm(750200, 4169100, 140)
+                ],
+                "2 No.lu Galeri Alanı (2,20 ha)",
+            )
+        )
 
 
 if __name__ == "__main__":

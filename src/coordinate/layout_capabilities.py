@@ -165,9 +165,13 @@ LAYOUT_CLASSES = (
             "partial 500 m meshes mixed with a compact tesisi cluster "
             "(do not require 60% of the full cartesian product). "
             "Galeri Giriş / Galeri Girişi / Galeri Ağzı (without Alanı) "
-            "captions are entrance point lists — do not close them into "
-            "a Galeri Alanı polygon. Sicil Nolu Alan and Ruhsatlı Alan "
-            "headings type the ring as RUHSAT even when ÇED is also named."
+            "captions are entrance point lists — emit KML Point pins, "
+            "never a filled Galeri Alanı. A GALERI_ALANI hull larger "
+            "than 5000 m² is also pins unless the caption is an explicit "
+            "Galeri Alanı. Sicil Nolu Alan and Ruhsatlı Alan headings "
+            "type the ring as RUHSAT even when ÇED is also named. On an "
+            "EK-1 selected-site appendix page, the Sicil Nolu Alan colon "
+            "dual-CRS block is the ruhsat ring."
         ),
     },
     {

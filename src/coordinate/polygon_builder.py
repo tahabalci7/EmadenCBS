@@ -10,6 +10,37 @@ from src.coordinate.table_classifier import TableClassifier
 
 class PolygonBuilder:
 
+    # Galeri giriş lists are point clusters in most ÇED/PTD reports.
+    # If a closed hull exceeds this area, emit pins instead of a polygon.
+    POINT_AREA_TYPES = {
+        "GALERI_ALANI",
+        "GALERI_GIRIS",
+    }
+    POINT_AREA_M2_THRESHOLD = 5000.0
+
+    @classmethod
+    def _heading_is_explicit_gallery_area(cls, heading):
+        normalized = TableClassifier._normalize(heading or "")
+        if "GALERI" not in normalized:
+            return False
+        if "GIRIS" in normalized:
+            return False
+        return "ALAN" in normalized
+
+    @classmethod
+    def _should_emit_as_pins(cls, table_type, points, heading=""):
+        if table_type == "GALERI_GIRIS":
+            return True
+        if table_type not in cls.POINT_AREA_TYPES:
+            return False
+        if cls._heading_is_explicit_gallery_area(heading):
+            if len(points) < 3:
+                return False
+            return cls._calculate_area(points) > 100000.0
+        if len(points) < 3:
+            return True
+        return cls._calculate_area(points) > cls.POINT_AREA_M2_THRESHOLD
+
     @classmethod
     def build(cls, coordinates):
         grouped = OrderedDict()
@@ -166,17 +197,42 @@ class PolygonBuilder:
         seen_geometries = set()
 
         for group in grouped.values():
-            if TableClassifier.is_point_list_area_type(
-                group.get("table_type", "DIGER")
-            ):
-                continue
-
             # Trim the intact group first. Live 15-pt STOK is tesisi plus
             # an L-shaped 500 m mesh in one ring; repair must not see the
             # composite before the lattice is dropped.
             group_points = trim_invented_lattice_composite(
                 group["points"]
             )
+            heading = (
+                group.get("polygon_heading")
+                or group.get("section")
+                or ""
+            )
+            if cls._should_emit_as_pins(
+                group.get("table_type", "DIGER"),
+                group_points,
+                heading,
+            ):
+                ring_group = dict(group)
+                ring_group["points"] = group_points
+                cls._summarize_crs_metadata(ring_group)
+                area = (
+                    cls._calculate_area(group_points)
+                    if len(group_points) >= 3
+                    else 0
+                )
+                polygons.append(
+                    {
+                        **ring_group,
+                        "geometry_type": "POINT",
+                        "point_count": len(group_points),
+                        "is_closed": False,
+                        "area_m2": round(area, 2),
+                        "area_ha": round(area / 10000, 4),
+                    }
+                )
+                continue
+
             if len(group_points) < 3:
                 continue
 
@@ -222,6 +278,7 @@ class PolygonBuilder:
 
                 polygon = {
                     **ring_group,
+                    "geometry_type": "POLYGON",
                     "point_count": len(points),
                     "is_closed": cls._is_closed(
                         points
@@ -315,6 +372,10 @@ class PolygonBuilder:
         result = []
 
         for polygon in polygons:
+            if polygon.get("geometry_type") == "POINT":
+                result.append(polygon)
+                continue
+
             polygon_type = polygon.get(
                 "table_type",
                 "DIGER",
@@ -332,6 +393,9 @@ class PolygonBuilder:
             # ---------------------------------------------
 
             for kept_polygon in result:
+                if kept_polygon.get("geometry_type") == "POINT":
+                    continue
+
                 if (
                     kept_polygon.get(
                         "table_type",
@@ -376,6 +440,9 @@ class PolygonBuilder:
 
             for other in polygons:
                 if other is polygon:
+                    continue
+
+                if other.get("geometry_type") == "POINT":
                     continue
 
                 if (

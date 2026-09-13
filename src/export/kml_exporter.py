@@ -22,8 +22,9 @@ class KMLExporter:
 
         # Madencilik / yardımcı alanlar
         "OCAK_ALANI": "7f0080ff",
-        "GALERI_ALANI": "7f800080",
-        "SANTIYE_ALANI": "7f808080",
+            "GALERI_ALANI": "7f800080",
+            "GALERI_GIRIS": "7f800080",
+            "SANTIYE_ALANI": "7f808080",
         "BITKISEL_TOPRAK_ALANI": "7f00ff80",
         "PASA_ALANI": "7f404080",
         "STOK_ALANI": "7f80ffff",
@@ -137,6 +138,21 @@ class KMLExporter:
             )
             poly_color.text = color
 
+            icon_style = ET.SubElement(
+                style,
+                cls._tag("IconStyle"),
+            )
+            icon_color = ET.SubElement(
+                icon_style,
+                cls._tag("color"),
+            )
+            icon_color.text = color
+            icon_scale = ET.SubElement(
+                icon_style,
+                cls._tag("scale"),
+            )
+            icon_scale.text = "0.8"
+
     @classmethod
     def _add_project_info(
         cls,
@@ -243,6 +259,16 @@ class KMLExporter:
             placemark_serial = 0
 
             for polygon in type_polygons:
+                if polygon.get("geometry_type") == "POINT":
+                    placemark_serial = cls._add_point_placemarks(
+                        folder,
+                        project_model,
+                        polygon,
+                        table_type,
+                        placemark_serial,
+                    )
+                    continue
+
                 coordinate_texts = (
                     cls._build_coordinate_texts(
                         polygon
@@ -348,6 +374,7 @@ class KMLExporter:
             "TESIS_ALANI": "Tesis Alanı",
             "DEPOLAMA_ALANI": "Depolama Alanı",
             "GALERI_ALANI": "Galeri Alanı",
+            "GALERI_GIRIS": "Galeri Giriş",
             "CALISILMAYACAK_ALAN": "Çalışılmayacak Alan",
             "SANTIYE_ALANI": "Şantiye Alanı",
             "BITKISEL_TOPRAK_ALANI": (
@@ -422,6 +449,7 @@ class KMLExporter:
             "ISLETME_IZIN_ALANI": "İşletme İzin Alanı",
             "OCAK_ALANI": "Ocak Alanı",
             "GALERI_ALANI": "Galeri Alanı",
+            "GALERI_GIRIS": "Galeri Giriş",
             "SANTIYE_ALANI": "Şantiye Alanı",
             "BITKISEL_TOPRAK_ALANI": "Bitkisel Toprak Alanı",
             "PASA_ALANI": "Pasa Alanı",
@@ -453,6 +481,71 @@ class KMLExporter:
         if not texts:
             return ""
         return texts[0]
+
+    @classmethod
+    def _add_point_placemarks(
+        cls,
+        folder,
+        project_model,
+        group,
+        table_type,
+        placemark_serial,
+    ):
+        pairs = cls._point_coordinate_pairs(group)
+        points = group.get("points") or []
+        style = (
+            f"#style_{table_type}"
+            if table_type in cls.POLYGON_COLORS
+            else "#style_DIGER"
+        )
+        for index, pair in enumerate(pairs):
+            placemark_serial += 1
+            point = points[index] if index < len(points) else {}
+            placemark = ET.SubElement(
+                folder,
+                cls._tag("Placemark"),
+            )
+            name = ET.SubElement(
+                placemark,
+                cls._tag("name"),
+            )
+            name.text = str(
+                point.get("name")
+                or f"{cls._display_table_type(table_type)} {index + 1}"
+            )
+            style_url = ET.SubElement(
+                placemark,
+                cls._tag("styleUrl"),
+            )
+            style_url.text = style
+            point_element = ET.SubElement(
+                placemark,
+                cls._tag("Point"),
+            )
+            coordinates = ET.SubElement(
+                point_element,
+                cls._tag("coordinates"),
+            )
+            longitude, latitude = pair
+            coordinates.text = f"{longitude},{latitude},0"
+        return placemark_serial
+
+    @classmethod
+    def _point_coordinate_pairs(cls, group):
+        points = group.get("points") or []
+        pairs = cls._coordinate_pairs(
+            points,
+            "transformed_longitude",
+            "transformed_latitude",
+        )
+        if pairs is not None:
+            return pairs
+        pairs = cls._coordinate_pairs(
+            points,
+            "longitude",
+            "latitude",
+        )
+        return pairs or []
 
     @classmethod
     def _build_coordinate_texts(
