@@ -271,6 +271,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             "geographic_only_unlabeled_ring",
             layout_class("coordinate_record_layouts")["capabilities"],
         )
+        self.assertIn(
+            "dual_crs_yx_then_split_lat_lon",
+            layout_class("coordinate_record_layouts")["capabilities"],
+        )
 
     def test_extract_coordinates_still_returns_a_list(self):
         result = CoordinateEngine.extract_coordinates("prose without tables")
@@ -693,6 +697,119 @@ class CoordinateRecordLayoutClassTests(unittest.TestCase):
         self.assertEqual(len(pipeline["coordinates"]), 4)
         self.assertEqual(len(pipeline["polygons"]), 1)
         self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+
+    def _dual_crs_fragmented_rows(self, labels, utm_pairs, geo_pairs):
+        """Index; space-separated Y/X; ENLEM; BOYLAM — dual-CRS dump."""
+
+        lines = []
+        for label, (easting, northing), (latitude, longitude) in zip(
+            labels,
+            utm_pairs,
+            geo_pairs,
+        ):
+            lines.extend(
+                (
+                    str(label),
+                    f"{easting:.3f} {northing:.3f}",
+                    f"{latitude:.7f}",
+                    f"{longitude:.7f}",
+                )
+            )
+        return tuple(lines)
+
+    def test_dual_crs_side_by_side_yx_then_split_lat_lon(self):
+        """Side-by-side UTM + geographic headers; Y/X share a line.
+
+        Destekci class: TableDetector accepts the tables but the parser
+        dropped rows when SAĞA (Y) YUKARI (X) were space-separated and
+        ENLEM / BOYLAM each followed on their own lines. Witnesses are
+        named PDFs only — this fixture is the layout class.
+        """
+
+        ruhsat_utm = square_utm(675382, 4144399, 212)
+        ruhsat_geo = (
+            (37.4282393, 34.9817757),
+            (37.4269372, 34.9793456),
+            (37.4252000, 34.9790000),
+            (37.4265000, 34.9820000),
+        )
+        ced_utm = square_utm(675000, 4144000, 400)
+        ced_geo = (
+            (37.4248000, 34.9780000),
+            (37.4241000, 34.9735000),
+            (37.4208000, 34.9742000),
+            (37.4215000, 34.9788000),
+        )
+        stok_utm = square_utm(675200, 4144200, 48)
+        stok_geo = (
+            (37.4262000, 34.9800000),
+            (37.4259000, 34.9795000),
+            (37.4255000, 34.9798000),
+            (37.4258000, 34.9803000),
+        )
+        text = "\n".join(
+            [
+                page(
+                    35,
+                    "Tablo 9. 1 Nolu Ruhsat Poligonu (P1) Koordinatları",
+                    "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+                    "DATUM: ED-50              DATUM: WGS-84",
+                    "ZON: 36",
+                    "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+                    *self._dual_crs_fragmented_rows(
+                        ("1", "2", "3", "4"),
+                        ruhsat_utm,
+                        ruhsat_geo,
+                    ),
+                    "Toplam Alan: 262,57 ha",
+                    "Tablo 10. ÇED Alanı Poligonu (Ç1) Koordinatları",
+                    "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+                    "DATUM: ED-50              DATUM: WGS-84",
+                    "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+                    *self._dual_crs_fragmented_rows(
+                        ("1", "2", "3", "4"),
+                        ced_utm,
+                        ced_geo,
+                    ),
+                    "Toplam Alan: 16,00 ha",
+                ),
+                page(
+                    36,
+                    "Tablo 11. Stok Alanı Koordinatları",
+                    "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+                    "DATUM: ED-50              DATUM: WGS-84",
+                    "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+                    *self._dual_crs_fragmented_rows(
+                        ("1", "2", "3", "4"),
+                        stok_utm,
+                        stok_geo,
+                    ),
+                    "Toplam Alan: 0,23 ha",
+                ),
+            ]
+        )
+        parsed = parse_coordinate_blocks(text)
+        self.assertGreaterEqual(len(parsed), 12)
+        self.assertEqual(parsed[0]["utm_y"], 675382.0)
+        self.assertEqual(parsed[0]["utm_x"], 4144399.0)
+        self.assertAlmostEqual(parsed[0]["latitude"], 37.4282393)
+        self.assertAlmostEqual(parsed[0]["longitude"], 34.9817757)
+
+        tables = TableDetector.find_tables(text)
+        self.assertGreaterEqual(len(tables), 3)
+        pipeline = run_coordinate_pipeline(text, tables=tables)
+        self.assertGreaterEqual(len(pipeline["coordinates"]), 12)
+        self.assertGreaterEqual(len(pipeline["polygons"]), 3)
+        self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+        types = {
+            polygon["table_type"]
+            for polygon in pipeline["polygons"]
+        }
+        self.assertIn("RUHSAT_ALANI", types)
+        self.assertTrue(
+            types & {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        )
+        self.assertIn("STOK_ALANI", types)
 
 
 class DetectorParserContractClassTests(unittest.TestCase):

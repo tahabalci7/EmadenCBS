@@ -51,11 +51,14 @@ LAYOUT_CLASSES = (
             "unlabeled_pairs",
             "space_dot_comma_thousands",
             "geographic_only_unlabeled_ring",
+            "dual_crs_yx_then_split_lat_lon",
         ),
         "contract": (
             "Accepted numeric tokens in Y+X, UTM-only, column-major, "
             "swapped northing/easting, unlabeled, grouped-thousands, "
-            "or unlabeled lon/lat-only rings become points."
+            "unlabeled lon/lat-only rings, or dual-CRS side-by-side "
+            "rows (index; SAĞA/YUKARI on one line; ENLEM then BOYLAM "
+            "on the following lines) become points."
         ),
     },
     {

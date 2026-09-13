@@ -103,17 +103,46 @@ def parse_localized_number(value: str) -> float:
 
 
 def parse_combined_geographic(value: str):
+    """Two numbers on one line: colon-separated or space-separated.
+
+    Dual-CRS tables often dump SAĞA (Y) and YUKARI (X) on one line
+    without a colon, then ENLEM / BOYLAM on the following lines.
+    Space-grouped thousands such as ``463 000`` stay one token.
+    """
+
     match = COMBINED_GEOGRAPHIC_PATTERN.fullmatch(
         value.strip()
     )
 
-    if match is None:
-        return None
+    if match is not None:
+        return (
+            to_float(match.group(1)),
+            to_float(match.group(2)),
+        )
 
-    return (
-        to_float(match.group(1)),
-        to_float(match.group(2)),
+    return _parse_space_separated_numeric_pair(value)
+
+
+def _parse_space_separated_numeric_pair(value: str):
+    tokens = _merge_space_grouped_thousands(
+        [
+            token.strip()
+            for token in str(value).split()
+            if token.strip() and token.strip() != ":"
+        ]
     )
+    numbers = []
+    for token in tokens:
+        if not is_number(token):
+            return None
+        try:
+            numbers.append(to_float(token))
+        except (TypeError, ValueError):
+            return None
+
+    if len(numbers) != 2:
+        return None
+    return (numbers[0], numbers[1])
 
 
 def is_label(
@@ -2819,6 +2848,9 @@ def _detect_area_type_on_text(line):
             return None
 
         if "RUHSAT ALANI" in normalized:
+            return "RUHSAT_ALANI"
+
+        if "RUHSAT POLIGON" in normalized:
             return "RUHSAT_ALANI"
 
         if (

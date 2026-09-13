@@ -328,6 +328,7 @@ class TableClassifier:
                 "RUHSAT ALANI",
                 "RUHSAT SAHASI",
                 "RUHSAT SINIRI",
+                "RUHSAT POLIGON",
             ],
         ):
             return "RUHSAT_ALANI"

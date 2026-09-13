@@ -222,6 +222,51 @@ class UtmYXLayoutTests(unittest.TestCase):
         self.assertEqual(coordinates[0]["y"], 562000.005)
         self.assertEqual(coordinates[0]["x"], 4027826.029)
 
+    def test_space_separated_yx_then_split_lat_lon(self):
+        text = "\n".join(
+            [
+                "KOORDINAT",
+                "Tablo 9. 1 Nolu Ruhsat Poligonu (P1) Koordinatları",
+                "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+                "DATUM: ED-50              DATUM: WGS-84",
+                "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+                "1",
+                "675382.000 4144399.002",
+                "37.4282393",
+                "34.9817757",
+                "2",
+                "675170.000 4144250.002",
+                "37.4269372",
+                "34.9793456",
+            ]
+        )
+        points = parse_coordinate_blocks(text)
+        self.assertEqual(len(points), 2)
+        self.assertEqual(points[0]["label"], "1")
+        self.assertEqual(points[0]["utm_y"], 675382.0)
+        self.assertEqual(points[0]["utm_x"], 4144399.002)
+        self.assertAlmostEqual(points[0]["latitude"], 37.4282393)
+        self.assertAlmostEqual(points[0]["longitude"], 34.9817757)
+        self.assertEqual(points[0]["table_type_override"], "RUHSAT_ALANI")
+
+    def test_space_grouped_thousands_are_not_split_as_a_pair(self):
+        text = "\n".join(
+            [
+                "KOORDINAT",
+                "Ruhsat Alanı Koordinatları",
+                "R1",
+                "463 000",
+                "4 014 000",
+                "R2",
+                "463 100",
+                "4 014 100",
+            ]
+        )
+        points = parse_coordinate_blocks(text)
+        self.assertEqual(len(points), 2)
+        self.assertEqual(points[0]["utm_y"], 463000.0)
+        self.assertEqual(points[0]["utm_x"], 4014000.0)
+
     def test_area_size_in_header_does_not_end_table(self):
         text = "\n".join(
             [
