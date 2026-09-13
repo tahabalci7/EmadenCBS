@@ -4,9 +4,14 @@ from src.coordinate.table_index import (
     apply_printed_page_offset,
     expand_pages,
     extract_index_entries,
+    extract_toc_appendix_entries,
+    is_coordinate_appendix_title,
     is_geometry_title,
+    planned_read_pages,
+    resolve_appendix_entry,
     resolve_entry,
     split_entry,
+    split_toc_appendix_line,
     table_no_variants,
 )
 
@@ -94,6 +99,76 @@ class TableIndexTests(unittest.TestCase):
             expand_pages([41], 80),
             [40, 41, 42, 43, 44],
         )
+
+    def test_toc_appendix_variants_and_late_targets(self):
+        variants = (
+            "EK-1 PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI ......... 165",
+            "Ek 1- Proje için seçilen yerin koordinatları ..... 120",
+            "1- Proje için seçilen yerin koordinatları  179",
+        )
+        for line in variants:
+            parsed = split_toc_appendix_line(line)
+            self.assertIsNotNone(parsed, line)
+            self.assertTrue(
+                is_coordinate_appendix_title(parsed["table_title"])
+            )
+            self.assertTrue(parsed["printed_page_raw"])
+
+        self.assertIsNone(
+            split_toc_appendix_line("EK-1 Listesi ......... 12")
+        )
+        self.assertIsNone(
+            split_toc_appendix_line(
+                "EK-2 Proje tanıtım dosyası ......... 200"
+            )
+        )
+
+        pages = [
+            {
+                "physical_page": 6,
+                "text": "İÇİNDEKİLER\n1. GİRİŞ ......... 1\n",
+            },
+            {
+                "physical_page": 7,
+                "text": (
+                    "EK-1 PROJE İÇİN SEÇİLEN YERİN "
+                    "KOORDİNATLARI ......... 165\n"
+                ),
+            },
+        ]
+        entries = extract_toc_appendix_entries(pages)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["physical_index_page"], 7)
+
+        resolved = resolve_appendix_entry(
+            entries[0],
+            [
+                {
+                    "physical_page": 7,
+                    "text": (
+                        "EK-1 PROJE İÇİN SEÇİLEN YERİN "
+                        "KOORDİNATLARI ......... 165"
+                    ),
+                },
+                {
+                    "physical_page": 171,
+                    "text": (
+                        "EK-1\n"
+                        "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI\n"
+                        "Tablo 1"
+                    ),
+                },
+            ],
+            skip_pages=[7],
+        )
+        self.assertEqual(resolved["physical_page"], 171)
+
+        read = planned_read_pages(332, 150, [164, 165, 175])
+        self.assertEqual(min(read), 1)
+        self.assertIn(150, read)
+        self.assertNotIn(151, read)
+        self.assertIn(165, read)
+        self.assertIn(175, read)
 
 
 if __name__ == "__main__":

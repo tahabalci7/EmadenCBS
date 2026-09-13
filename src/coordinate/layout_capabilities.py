@@ -181,6 +181,25 @@ LAYOUT_CLASSES = (
             "sicil, or firma stay visible as Bilinmiyor."
         ),
     },
+    {
+        "id": "coordinate_appendix_index",
+        "title": "EK-1 selected-site coordinate appendix",
+        "modules": (
+            "src.coordinate.table_index",
+        ),
+        "capabilities": (
+            "toc_ek1_appendix_to_target_pages",
+            "appendix_pages_beyond_fast_scan",
+        ),
+        "contract": (
+            "İÇİNDEKİLER / TOC entries for the selected-site "
+            "coordinate appendix (EK-1 / Ek 1- / 1- Proje için "
+            "seçilen yerin koordinatları) add those pages to "
+            "target_pages even when they are beyond the fast-scan "
+            "max_pages window (150). Folder EK-2 (PTD project type) "
+            "is not the same as this appendix label EK-1."
+        ),
+    },
 )
 
 LAYOUT_CLASS_IDS = tuple(item["id"] for item in LAYOUT_CLASSES)

@@ -48,6 +48,13 @@ from src.coordinate.state_machine import (
 )
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.table_detector import TableDetector
+from src.coordinate.table_index import (
+    expand_pages,
+    extract_toc_appendix_entries,
+    is_coordinate_appendix_title,
+    parse_printed_page,
+    planned_read_pages,
+)
 from src.export.kml_exporter import KMLExporter
 from src.project.project_info_extractor import ProjectInfoExtractor
 from tools.scan_kml_geometry import scan_kml_file
@@ -217,7 +224,7 @@ def export_and_scan_kml(pairs):
 
 
 class LayoutCapabilityMapTests(unittest.TestCase):
-    def test_seven_difference_classes_are_registered(self):
+    def test_eight_difference_classes_are_registered(self):
         self.assertEqual(
             LAYOUT_CLASS_IDS,
             (
@@ -228,6 +235,7 @@ class LayoutCapabilityMapTests(unittest.TestCase):
                 "ring_geometry",
                 "grouping_typing",
                 "metadata_kml_naming",
+                "coordinate_appendix_index",
             ),
         )
         for item in LAYOUT_CLASSES:
@@ -274,6 +282,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "dual_crs_yx_then_split_lat_lon",
             layout_class("coordinate_record_layouts")["capabilities"],
+        )
+        self.assertIn(
+            "toc_ek1_appendix_to_target_pages",
+            layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "appendix_pages_beyond_fast_scan",
+            layout_class("coordinate_appendix_index")["capabilities"],
         )
 
     def test_extract_coordinates_still_returns_a_list(self):
@@ -1759,6 +1775,75 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
             Path(relative).name.startswith("42077 - ")
         )
         self.assertTrue(relative.endswith(".kml"))
+
+
+class CoordinateAppendixIndexClassTests(unittest.TestCase):
+    def test_toc_ek1_appendix_beyond_fast_scan(self):
+        """İÇİNDEKİLER EK-1 coordinate appendix is a late target.
+
+        Folder EK-2 (PTD) is not this appendix label. Empty
+        index_target_pages + appendix after page 150 is why late
+        PTD/ÇED files look like NO_COORDINATE_TABLE.
+        """
+
+        for title in (
+            "EK-1 PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+            "Ek 1- Proje için seçilen yerin koordinatları",
+            "1- Proje için seçilen yerin koordinatları",
+        ):
+            self.assertTrue(
+                is_coordinate_appendix_title(title),
+                title,
+            )
+        self.assertFalse(
+            is_coordinate_appendix_title(
+                "EK-1 Listesi uygulanacak projeler"
+            )
+        )
+        self.assertFalse(
+            is_coordinate_appendix_title(
+                "EK-2 Proje tanıtım dosyası"
+            )
+        )
+
+        pages = [
+            {
+                "physical_page": 6,
+                "text": "\n".join(
+                    (
+                        "İÇİNDEKİLER",
+                        "1. GİRİŞ ................................ 1",
+                    )
+                ),
+            },
+            {
+                "physical_page": 7,
+                "text": (
+                    "EK-1 PROJE İÇİN SEÇİLEN YERİN "
+                    "KOORDİNATLARI ......... 165"
+                ),
+            },
+        ]
+        entries = extract_toc_appendix_entries(pages)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(
+            parse_printed_page(entries[0]["printed_page_raw"])[1],
+            165,
+        )
+        targets = expand_pages(
+            [165],
+            332,
+            before=1,
+            after=10,
+        )
+        self.assertIn(165, targets)
+        self.assertIn(175, targets)
+        read = planned_read_pages(332, 150, targets)
+        self.assertIn(1, read)
+        self.assertIn(150, read)
+        self.assertNotIn(151, read)
+        self.assertIn(165, read)
+        self.assertIn(175, read)
 
 
 if __name__ == "__main__":

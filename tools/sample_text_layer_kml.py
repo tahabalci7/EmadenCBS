@@ -25,7 +25,10 @@ from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.project_model import ProjectModel
 from src.coordinate.ring_geometry import count_lonlat_crossings
 from src.coordinate.table_detector import TableDetector
-from src.coordinate.table_index import TableIndexLocator
+from src.coordinate.table_index import (
+    TableIndexLocator,
+    planned_read_pages,
+)
 from src.export.kml_exporter import KMLExporter
 from src.ocr.ocr_engine import OCREngine
 from src.project.project_info_extractor import ProjectInfoExtractor
@@ -79,11 +82,14 @@ def extract_ocr_free(pdf_path, max_pages):
         extraction["index_target_pages"] = []
         return extraction
 
-    pages = set(range(1, min(max_pages, page_count) + 1))
-    pages.update(target_pages)
+    pages = planned_read_pages(
+        page_count,
+        max_pages,
+        target_pages,
+    )
     extraction = OCREngine.extract_text_layer_pages(
         pdf_path,
-        sorted(pages),
+        pages,
     )
     extraction["index_found"] = bool(plan.get("index_found"))
     extraction["index_target_pages"] = target_pages
