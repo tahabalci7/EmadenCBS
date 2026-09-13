@@ -2,6 +2,11 @@ import re
 import unicodedata
 from pathlib import Path
 
+from src.project.mine_type_allowlist import (
+    filter_mine_type,
+    is_missing_mine_type as allowlist_is_missing_mine_type,
+)
+
 
 class ProjectInfoExtractor:
 
@@ -55,7 +60,13 @@ class ProjectInfoExtractor:
             source_path=source_path,
             project_type=project_type,
         )
+        info["mine_type"] = self.normalize_mine_type(
+            info.get("mine_type")
+        )
         info["license_no_missing"] = self.is_missing_license_no(
+            info
+        )
+        info["mine_type_missing"] = self.is_missing_mine_type(
             info
         )
         return info
@@ -401,7 +412,9 @@ class ProjectInfoExtractor:
         )
 
         if value != "Bilinmiyor":
-            return self._clean_mine_type(value)
+            return self.normalize_mine_type(
+                self._clean_mine_type(value)
+            )
 
         # -------------------------------------------------
         # 2. PROJE ADINDAN MADEN CİNSİ
@@ -547,6 +560,16 @@ class ProjectInfoExtractor:
                 if normalized_part not in existing_normalized:
                     candidates.append(part)
 
+        # Junk-only OCAĞI captures (İŞLETME, MADEN) must not
+        # block the MADENİ / GRUP fallback. Allowlist first.
+        if candidates:
+            filtered = self.normalize_mine_type(
+                " / ".join(candidates)
+            )
+            if filtered != self.UNKNOWN:
+                return filtered
+            candidates = []
+
         # -------------------------------------------------
         # 3. ALTERNATİF MADEN TANIMLARI
         #
@@ -628,10 +651,10 @@ class ProjectInfoExtractor:
                         )
 
         if not candidates:
-            return "Bilinmiyor"
+            return self.UNKNOWN
 
-        return " / ".join(
-            candidates
+        return self.normalize_mine_type(
+            " / ".join(candidates)
         )
     def _clean_mine_type(self, value):
         """
@@ -848,7 +871,9 @@ class ProjectInfoExtractor:
         cinsi Bilinmiyor olarak eklenir. Eksik sicil
         uydurulmaz; `license_no_missing` /
         `is_missing_license_no` Destekci'nin kullanıcıya
-        sorması gereken placeholder'dır.
+        sorması gereken placeholder'dır. Allowlist dışı
+        maden cinsi de uydurulmaz; `mine_type_missing`
+        aynı soru yoludur.
         """
 
         return cls.build_export_filename(
@@ -867,6 +892,8 @@ class ProjectInfoExtractor:
         Sicil okunamazsa gövdede Bilinmiyor kalır; bu bir
         tahmin değil. Destekci, dışa aktarmadan önce
         `is_missing_license_no` ile kullanıcıya sormalıdır.
+        Allowlist dışı maden cinsi dosya adına yazılmaz;
+        `mine_type_missing` ile sorulur.
         """
 
         info = project_info or {}
@@ -879,7 +906,9 @@ class ProjectInfoExtractor:
             or cls.UNKNOWN
         )
         mine_type = (
-            cls._usable_name_token(info.get("mine_type"))
+            cls._usable_name_token(
+                cls.normalize_mine_type(info.get("mine_type"))
+            )
             or cls.UNKNOWN
         )
         stem = f"{license_no} - {company} - {mine_type}"
@@ -905,7 +934,8 @@ class ProjectInfoExtractor:
         gövdede tekrarlanmaz. Eksik il / Ek / sicil / firma
         / maden cinsi Bilinmiyor olarak görünür. Sicil
         placeholder'ı sessizce bırakılmamalı: Destekci
-        `license_no_missing` görürse kullanıcıya sormalı.
+        `license_no_missing` veya `mine_type_missing`
+        görürse kullanıcıya sormalı.
         """
 
         info = project_info or {}
@@ -932,6 +962,26 @@ class ProjectInfoExtractor:
 
         info = project_info or {}
         return not cls._usable_name_token(info.get("license_no"))
+
+    @classmethod
+    def normalize_mine_type(cls, value):
+        """Keep allowlisted minerals only; else Bilinmiyor."""
+
+        return filter_mine_type(value, unknown=cls.UNKNOWN)
+
+    @classmethod
+    def is_missing_mine_type(cls, project_info):
+        """Maden cinsi boş, Bilinmiyor veya allowlist dışı ise True."""
+
+        info = project_info or {}
+        if allowlist_is_missing_mine_type(
+            info.get("mine_type"),
+            unknown=cls.UNKNOWN,
+        ):
+            return True
+        return not cls._usable_name_token(
+            cls.normalize_mine_type(info.get("mine_type"))
+        )
 
     @classmethod
     def _ek_folder_name(cls, value):
