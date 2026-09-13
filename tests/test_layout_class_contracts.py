@@ -284,6 +284,18 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("coordinate_record_layouts")["capabilities"],
         )
         self.assertIn(
+            "dual_crs_colon_yx_lat_lon",
+            layout_class("coordinate_record_layouts")["capabilities"],
+        )
+        self.assertIn(
+            "entrance_point_table_not_area_polygon",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "sicil_nolu_alan_is_ruhsat",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
             "toc_ek1_appendix_to_target_pages",
             layout_class("coordinate_appendix_index")["capabilities"],
         )
@@ -1885,6 +1897,230 @@ class CoordinateAppendixIndexClassTests(unittest.TestCase):
         self.assertNotIn(151, read)
         self.assertIn(165, read)
         self.assertIn(175, read)
+
+
+def hexagon_utm(center_y, center_x, area_ha):
+    """Regular hexagon in metres whose shoelace area is ``area_ha``."""
+
+    side = math.sqrt(area_ha * 10000 * 2 / (3 * math.sqrt(3)))
+    pairs = []
+    for index in range(6):
+        angle = math.pi / 6 + index * math.pi / 3
+        pairs.append(
+            (
+                center_y + side * math.cos(angle),
+                center_x + side * math.sin(angle),
+            )
+        )
+    return tuple(pairs)
+
+
+def _colon_column_major_rows(labels, utm_pairs, geo_pairs):
+    """1..n; then Y:X; then lat:lon — colon dual-CRS appendix dump."""
+
+    lines = [str(label) for label in labels]
+    lines.extend(f"{easting:.3f}:{northing:.3f}" for easting, northing in utm_pairs)
+    lines.extend(
+        f"{latitude:.8f}:{longitude:.8f}"
+        for latitude, longitude in geo_pairs
+    )
+    return tuple(lines)
+
+
+class EntrancePointAndColonDualCrsTests(unittest.TestCase):
+    """Entrance-point tables vs area tables; colon dual-CRS appendix."""
+
+    RUHSAT_GEO = (
+        (37.66316512, 35.85063454),
+        (37.66300000, 35.86600000),
+        (37.65180000, 35.86920000),
+        (37.63920000, 35.86040000),
+        (37.64100000, 35.84500000),
+        (37.65540000, 35.84320000),
+    )
+    GIRIS_UTM = (
+        (750554.527, 4169276.059),
+        (752800.000, 4169400.000),
+        (753400.000, 4172000.000),
+        (751600.000, 4172800.000),
+        (749800.000, 4171600.000),
+        (749400.000, 4169800.000),
+        (750200.000, 4168600.000),
+    )
+    GIRIS_GEO = (
+        (37.63484396, 35.83912217),
+        (37.63600000, 35.86400000),
+        (37.65900000, 35.87100000),
+        (37.66600000, 35.85100000),
+        (37.65500000, 35.83100000),
+        (37.63900000, 35.82600000),
+        (37.62800000, 35.83500000),
+    )
+
+    def test_headings_distinguish_entrance_points_from_gallery_area(self):
+        self.assertEqual(
+            TableClassifier.classify("Galeri Giriş Koordinatları"),
+            "GALERI_GIRIS",
+        )
+        self.assertEqual(
+            detect_area_type("Galeri Giriş Koordinatları"),
+            "GALERI_GIRIS",
+        )
+        self.assertEqual(
+            TableClassifier.classify("Galeri Girişi Koordinatları"),
+            "GALERI_GIRIS",
+        )
+        self.assertEqual(
+            TableClassifier.classify("2 No.lu Galeri Alanı (2,20 ha)"),
+            "GALERI_ALANI",
+        )
+        self.assertEqual(
+            detect_area_type("2 No.lu Galeri Alanı (2,20 ha)"),
+            "GALERI_ALANI",
+        )
+        self.assertEqual(
+            TableClassifier.classify(
+                "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )"
+            ),
+            "RUHSAT_ALANI",
+        )
+        self.assertEqual(
+            detect_area_type(
+                "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )"
+            ),
+            "RUHSAT_ALANI",
+        )
+        self.assertEqual(
+            TableClassifier.classify(
+                "Tablo 1. Sicil 1719 Ruhsatlı Alan ve ÇED Alanı Koordinatları"
+            ),
+            "RUHSAT_ALANI",
+        )
+
+    def test_colon_dual_crs_ruhsat_block_is_full_ring(self):
+        ruhsat_utm = hexagon_utm(751475.0, 4172450.0, 1849.19)
+        text = page(
+            37,
+            "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+            "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+            "DATUM: ED-50              DATUM: WGS-84",
+            "ZON: 36",
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )",
+            *_colon_column_major_rows(
+                ("1", "2", "3", "4", "5", "6"),
+                ruhsat_utm,
+                self.RUHSAT_GEO,
+            ),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+        ]
+        self.assertEqual(len(pipeline["coordinates"]), 6)
+        self.assertEqual(len(ruhsat), 1)
+        self.assertEqual(ruhsat[0]["point_count"], 6)
+        self.assertAlmostEqual(ruhsat[0]["area_ha"], 1849.19, delta=2.0)
+        self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+
+    def test_galeri_giris_point_list_is_not_an_area_polygon(self):
+        ruhsat_utm = hexagon_utm(751475.0, 4172450.0, 1849.19)
+        text = page(
+            37,
+            "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+            "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+            "DATUM: ED-50              DATUM: WGS-84",
+            "ZON: 36",
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )",
+            *_colon_column_major_rows(
+                ("1", "2", "3", "4", "5", "6"),
+                ruhsat_utm,
+                self.RUHSAT_GEO,
+            ),
+            "Galeri Giriş Koordinatları",
+            *_colon_column_major_rows(
+                ("1", "2", "3", "4", "5", "6", "7"),
+                self.GIRIS_UTM,
+                self.GIRIS_GEO,
+            ),
+        )
+        parsed = parse_coordinate_blocks(text)
+        giris_points = [
+            point
+            for point in parsed
+            if point.get("table_type_override") == "GALERI_GIRIS"
+        ]
+        self.assertEqual(len(giris_points), 7)
+
+        pipeline = run_coordinate_pipeline(text)
+        types = {
+            polygon["table_type"]
+            for polygon in pipeline["polygons"]
+        }
+        self.assertIn("RUHSAT_ALANI", types)
+        self.assertNotIn("GALERI_ALANI", types)
+        self.assertNotIn("GALERI_GIRIS", types)
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+        ]
+        self.assertEqual(len(ruhsat), 1)
+        self.assertEqual(ruhsat[0]["point_count"], 6)
+        self.assertAlmostEqual(ruhsat[0]["area_ha"], 1849.19, delta=2.0)
+        galeri_area = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "GALERI_ALANI"
+            and polygon["area_ha"] > 100
+        ]
+        self.assertEqual(galeri_area, [])
+
+    def test_stacked_colon_dual_crs_and_gallery_area_still_close(self):
+        """Stacked index / Y:X / lat:lon still parses; Galeri Alanı stays area."""
+
+        ruhsat_utm = hexagon_utm(751475.0, 4172450.0, 1849.19)
+        stacked = []
+        for label, (easting, northing), (latitude, longitude) in zip(
+            ("1", "2", "3", "4", "5", "6"),
+            ruhsat_utm,
+            self.RUHSAT_GEO,
+        ):
+            stacked.extend(
+                (
+                    str(label),
+                    f"{easting:.3f}:{northing:.3f}",
+                    f"{latitude:.8f}:{longitude:.8f}",
+                )
+            )
+        galeri_utm = square_utm(750200, 4169100, 140)
+        text = page(
+            37,
+            "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+            "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+            "DATUM: ED-50              DATUM: WGS-84",
+            "ZON: 36",
+            "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )",
+            *stacked,
+            "2 No.lu Galeri Alanı (2,20 ha)",
+            *stacked_utm_lines(("G1", "G2", "G3", "G4"), galeri_utm),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        types = {
+            polygon["table_type"]
+            for polygon in pipeline["polygons"]
+        }
+        self.assertIn("RUHSAT_ALANI", types)
+        self.assertIn("GALERI_ALANI", types)
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+        ]
+        self.assertEqual(ruhsat[0]["point_count"], 6)
 
 
 if __name__ == "__main__":

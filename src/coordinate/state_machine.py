@@ -618,6 +618,9 @@ def parse_point_at(lines, start, allow_numeric_labels):
         if _looks_like_invalid_geographic_attempt(lines, pos, utm_y, utm_x):
             return None
 
+        if _numeric_label_starts_pair_run(label, lines, pos):
+            return None
+
         if label is None:
             label = ""
 
@@ -644,14 +647,42 @@ def parse_point_at(lines, start, allow_numeric_labels):
     }
 
 
+def _tokens_from_coordinate_line(line):
+    """Whitespace tokens, with colon-separated Y:X / lat:lon split."""
+
+    raw = []
+    for token in str(line).split():
+        token = token.strip()
+        if not token or token == ":":
+            continue
+        if ":" in token:
+            raw.extend(
+                part.strip()
+                for part in token.split(":")
+                if part.strip()
+            )
+        else:
+            raw.append(token)
+    return _merge_space_grouped_thousands(raw)
+
+
+def _numeric_label_starts_pair_run(label, lines, pos):
+    """Last 1..n index sitting in front of a Y/X pair column.
+
+    Dual-CRS appendix dumps list indices, then all Y:X, then all lat:lon.
+    Treating that last index as a row label steals the first pair and
+    splits the ruhsat ring.
+    """
+
+    if label is None or not NUMERIC_LABEL_PATTERN.match(str(label).strip()):
+        return False
+    if pos >= len(lines):
+        return False
+    return parse_utm_pair(lines, pos) is not None
+
+
 def _numeric_values_from_line(line):
-    tokens = _merge_space_grouped_thousands(
-        [
-            token.strip()
-            for token in str(line).split()
-            if token.strip() and token.strip() != ":"
-        ]
-    )
+    tokens = _tokens_from_coordinate_line(line)
     values = []
     leftovers = []
     for token in tokens:
@@ -811,7 +842,9 @@ def parse_column_major_coordinates(
         combined = parse_combined_geographic(line)
         if combined is not None:
             if order_utm(combined[0], combined[1]) is not None:
-                return None
+                kinds.append(("Y", combined[0]))
+                kinds.append(("X", combined[1]))
+                continue
 
             kinds.append(("LAT", combined[0]))
             kinds.append(("LON", combined[1]))
@@ -2972,10 +3005,7 @@ def _detect_area_type_on_text(line):
         if stripped.startswith("SEKIL"):
             return None
 
-        if "RUHSAT ALANI" in normalized:
-            return "RUHSAT_ALANI"
-
-        if "RUHSAT POLIGON" in normalized:
+        if TableClassifier._looks_like_ruhsat_heading(normalized):
             return "RUHSAT_ALANI"
 
         if (
@@ -3065,10 +3095,12 @@ def _detect_area_type_on_text(line):
         if "OCAK ALANI" in normalized or "OCAK SAHASI" in normalized:
             return "OCAK_ALANI"
 
+        if TableClassifier._is_gallery_entrance_heading(normalized):
+            return "GALERI_GIRIS"
+
         if "GALERI" in normalized and (
             "ALAN" in normalized
             or "AGZI" in normalized
-            or "GIRIS" in normalized
         ):
             return "GALERI_ALANI"
 

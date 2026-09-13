@@ -5,6 +5,7 @@ from src.coordinate.ring_geometry import (
     repair_self_intersecting_rings,
     trim_invented_lattice_composite,
 )
+from src.coordinate.table_classifier import TableClassifier
 
 
 class PolygonBuilder:
@@ -165,6 +166,11 @@ class PolygonBuilder:
         seen_geometries = set()
 
         for group in grouped.values():
+            if TableClassifier.is_point_list_area_type(
+                group.get("table_type", "DIGER")
+            ):
+                continue
+
             # Trim the intact group first. Live 15-pt STOK is tesisi plus
             # an L-shaped 500 m mesh in one ring; repair must not see the
             # composite before the lattice is dropped.

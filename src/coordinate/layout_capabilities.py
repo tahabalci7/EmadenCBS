@@ -52,6 +52,7 @@ LAYOUT_CLASSES = (
             "space_dot_comma_thousands",
             "geographic_only_unlabeled_ring",
             "dual_crs_yx_then_split_lat_lon",
+            "dual_crs_colon_yx_lat_lon",
         ),
         "contract": (
             "Accepted numeric tokens in Y+X, UTM-only, column-major, "
@@ -59,7 +60,10 @@ LAYOUT_CLASSES = (
             "unlabeled lon/lat-only rings, or dual-CRS side-by-side "
             "rows (index; SAĞA/YUKARI on one line; ENLEM then BOYLAM "
             "on the following lines, including the live text-layer "
-            "interleave index+lat then Y/X+lon) become points."
+            "interleave index+lat then Y/X+lon) become points. "
+            "The same dual-CRS class with colon-separated Y:X and "
+            "lat:lon pairs (column-major 1..n then Y:X then lat:lon, "
+            "or stacked index / Y:X / lat:lon) yields one full ring."
         ),
     },
     {
@@ -142,6 +146,8 @@ LAYOUT_CLASSES = (
             "parenthetical_ced_is_not_tesisi_type",
             "geo_ring_not_inherit_auxiliary",
             "unattested_lattice_not_composite_ring",
+            "entrance_point_table_not_area_polygon",
+            "sicil_nolu_alan_is_ruhsat",
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
@@ -157,7 +163,11 @@ LAYOUT_CLASSES = (
             "verts, or UTM pairs absent from the table text, is not a "
             "STOK ring — including lon/lat y/x rings and L-shaped / "
             "partial 500 m meshes mixed with a compact tesisi cluster "
-            "(do not require 60% of the full cartesian product)."
+            "(do not require 60% of the full cartesian product). "
+            "Galeri Giriş / Galeri Girişi / Galeri Ağzı (without Alanı) "
+            "captions are entrance point lists — do not close them into "
+            "a Galeri Alanı polygon. Sicil Nolu Alan and Ruhsatlı Alan "
+            "headings type the ring as RUHSAT even when ÇED is also named."
         ),
     },
     {

@@ -55,20 +55,29 @@ class TableClassifier:
             return "CALISILMAYACAK_ALAN"
 
         # -----------------------------------------------------
-        # 2. GALERİ
+        # 2. GALERİ — giriş/entrance lists are not area rings
         # -----------------------------------------------------
+
+        if cls._is_gallery_entrance_heading(normalized):
+            return "GALERI_GIRIS"
 
         if cls._contains_any(
             normalized,
             [
                 "GALERI AGZI",
                 "GALERI ALANI",
-                "GALERI GIRISI",
-                "GALERI GIRIS",
                 "GALERI",
             ],
         ):
             return "GALERI_ALANI"
+
+        # -----------------------------------------------------
+        # RUHSAT / SİCİL NOLU ALAN (before generic ÇED+ALAN)
+        # -----------------------------------------------------
+
+        if cls._looks_like_ruhsat_heading(normalized):
+            return "RUHSAT_ALANI"
+
         # -----------------------------------------------------
         # TALEP EDİLEN / PROJEYE KONU ÇED ALANI
         # -----------------------------------------------------
@@ -318,21 +327,6 @@ class TableClassifier:
         ):
             return "PROJE_ALANI"
 
-        # -----------------------------------------------------
-        # 8. RUHSAT ALANI
-        # -----------------------------------------------------
-
-        if cls._contains_any(
-            normalized,
-            [
-                "RUHSAT ALANI",
-                "RUHSAT SAHASI",
-                "RUHSAT SINIRI",
-                "RUHSAT POLIGON",
-            ],
-        ):
-            return "RUHSAT_ALANI"
-
         prefix_hint = cls._classify_prefix_hint(
             table_text
         )
@@ -394,6 +388,13 @@ class TableClassifier:
         }
     )
 
+    # Entrance / mouth coordinate lists. Not closed into area polygons.
+    POINT_LIST_AREA_TYPES = frozenset(
+        {
+            "GALERI_GIRIS",
+        }
+    )
+
     DOMINANT_AREA_TYPES = frozenset(
         {
             "RUHSAT_ALANI",
@@ -408,6 +409,51 @@ class TableClassifier:
     # ---------------------------------------------------------
     # TABLO BAŞLIĞINI BUL
     # ---------------------------------------------------------
+
+    @classmethod
+    def _is_gallery_entrance_heading(cls, normalized: str) -> bool:
+        """Galeri giriş / ağzı point lists, not Galeri Alanı rings."""
+
+        if "GALERI" not in normalized:
+            return False
+
+        if cls._contains_any(
+            normalized,
+            [
+                "GIRISI",
+                "GIRIS",
+            ],
+        ):
+            return True
+
+        return (
+            "AGZI" in normalized
+            and "ALAN" not in normalized
+        )
+
+    @classmethod
+    def _looks_like_ruhsat_heading(cls, normalized: str) -> bool:
+        if cls._contains_any(
+            normalized,
+            [
+                "RUHSAT ALANI",
+                "RUHSAT SAHASI",
+                "RUHSAT SINIRI",
+                "RUHSAT POLIGON",
+                "RUHSATLI ALAN",
+            ],
+        ):
+            return True
+
+        return (
+            "SICIL" in normalized
+            and "NOLU" in normalized
+            and "ALAN" in normalized
+        )
+
+    @classmethod
+    def is_point_list_area_type(cls, table_type: str) -> bool:
+        return table_type in cls.POINT_LIST_AREA_TYPES
 
     @classmethod
     def strip_parentheticals(cls, text: str) -> str:
@@ -759,6 +805,9 @@ class TableClassifier:
                         " ".join(window[start:])
                     )
                 )
+                if cls._looks_like_ruhsat_heading(candidate):
+                    return "RUHSAT_ALANI"
+
                 hinted = cls._classify_ced_heading(
                     candidate
                 )
