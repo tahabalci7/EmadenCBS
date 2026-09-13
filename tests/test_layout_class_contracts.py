@@ -265,6 +265,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("metadata_kml_naming")["capabilities"],
         )
         self.assertIn(
+            "sicil_preferred_over_erisim",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
+            "vergi_not_license_no",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
             "late_caption_not_previous_continuation",
             layout_class("table_continuation")["capabilities"],
         )
@@ -1844,6 +1852,85 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
         self.assertEqual(Path(relative).parts[0], "Ankara")
         self.assertEqual(Path(relative).parts[1], "Ek-1")
         self.assertTrue(relative.endswith(".kml"))
+
+    def test_sicil_preferred_over_erisim_in_title_layouts(self):
+        fixtures = (
+            (
+                "S:67802 SİCİL NUMARALI VE ER:2542506 "
+                "ERİŞİM NUMARALI",
+                "67802",
+                "2542506",
+            ),
+            (
+                "S:68987(ER:2548828)",
+                "68987",
+                "2548828",
+            ),
+            (
+                "S:24431 SİCİL VE ER: 2168532 ERİŞİM",
+                "24431",
+                "2168532",
+            ),
+            (
+                "IV. Grup S: 200610240 Sicil Numaralı ve "
+                "ER: 1508418 Erişim Numaralı",
+                "200610240",
+                "1508418",
+            ),
+            (
+                "Sicil: 58130 ve ERİŞİM NUMARASI: 1508418",
+                "58130",
+                "1508418",
+            ),
+            (
+                "RUHSAT SİCİL NO: 42077 ER:2542506 ERİŞİM",
+                "42077",
+                "2542506",
+            ),
+        )
+        extractor = ProjectInfoExtractor()
+        for text, sicil, erisim in fixtures:
+            with self.subTest(text=text):
+                info = extractor.extract(
+                    "Nihai ÇED Raporu\n"
+                    f"PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.\n"
+                    f"{text}\n"
+                    "KUVARSİT OCAĞI"
+                )
+                self.assertEqual(info["license_no"], sicil)
+                self.assertEqual(info["erisim_no"], erisim)
+                self.assertFalse(info["license_no_missing"])
+                name = ProjectInfoExtractor.build_export_filename(
+                    info
+                )
+                self.assertTrue(name.startswith(f"{sicil} - "))
+                self.assertFalse(name.startswith(f"{erisim} - "))
+                balloon = info["license_no"]
+                self.assertEqual(balloon, sicil)
+                self.assertNotEqual(balloon, erisim)
+
+    def test_vergi_and_ticaret_odasi_are_not_ruhsat(self):
+        text = "\n".join(
+            [
+                "Nihai ÇED Raporu",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "VERGİ NUMARASI / TİCARET ODASI SİCİL NO",
+                "7810523944 / 936009",
+                "İR: 201300587 , ER: 3297705",
+                "RN:201300587",
+                "201300587 Ruhsat Numaralı BOKSİT OCAĞI",
+            ]
+        )
+        info = ProjectInfoExtractor().extract(text)
+        self.assertEqual(info["license_no"], "201300587")
+        self.assertNotIn(
+            info["license_no"],
+            {"7810523944", "936009", "3297705"},
+        )
+        self.assertFalse(info["license_no_missing"])
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("201300587 - "))
+        self.assertFalse(name.startswith("7810523944"))
 
 
 class CoordinateAppendixIndexClassTests(unittest.TestCase):
