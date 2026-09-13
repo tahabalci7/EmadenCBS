@@ -24,8 +24,11 @@ from src.core.pdf_text_extraction_service import (
 )
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.pipeline_contract import (
+    AREA_MISMATCH,
+    KML_HELD_FOR_REVIEW,
     collect_pipeline_diagnostics,
     format_diagnostics_text,
+    reason_codes,
 )
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.project_model import ProjectModel
@@ -735,19 +738,47 @@ class MainWindow(QMainWindow):
         )
 
         try:
-            KMLExporter.export(
+            review = KMLExporter.export(
                 self.current_project_model,
                 file_path,
-            )
+            ) or {}
 
-            QMessageBox.information(
-                self,
-                "KML Oluşturuldu",
-                (
-                    "KML dosyası otomatik kaydedildi:\n\n"
-                    f"{file_path}"
-                ),
+            codes = reason_codes(
+                getattr(
+                    self.current_project_model,
+                    "diagnostics",
+                    [],
+                )
             )
+            held = (
+                review.get("held_for_review")
+                or AREA_MISMATCH in codes
+                or KML_HELD_FOR_REVIEW in codes
+            )
+            skipped = review.get("skipped_count", 0)
+
+            if held:
+                QMessageBox.warning(
+                    self,
+                    "KML İnceleme Bekliyor",
+                    (
+                        "KML yazıldı ancak tablo alanı ile poligon "
+                        "alanı uyuşmayan halka(lar) dışarı aktarılmadı.\n\n"
+                        f"Atlanan poligon: {skipped}\n"
+                        f"{file_path}\n\n"
+                        "Destekci KML QA: sessiz yanlış geometri "
+                        "yerine bu halkalar tutuldu."
+                    ),
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "KML Oluşturuldu",
+                    (
+                        "KML dosyası otomatik kaydedildi:\n\n"
+                        f"{file_path}"
+                    ),
+                )
 
         except Exception as error:
             QMessageBox.critical(

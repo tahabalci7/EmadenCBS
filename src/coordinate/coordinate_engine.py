@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.crs_resolver import CRSResolver
 from src.coordinate.datum_detector import DatumDetector
+from src.coordinate.area_qa import attach_declared_area
 from src.coordinate.state_machine import (
     NUMBER_TOKEN_PATTERN,
     parse_coordinate_blocks,
@@ -242,6 +243,10 @@ class CoordinateEngine:
                 ),
             )
             table_points = cls._drop_unattested_points(
+                table_points,
+                table,
+            )
+            attach_declared_area(
                 table_points,
                 table,
             )
@@ -495,6 +500,9 @@ class CoordinateEngine:
             "polygon_heading": point.get(
                 "polygon_heading",
                 "",
+            ),
+            "declared_ha": point.get(
+                "declared_ha"
             ),
 
             # ---------------------------------------------

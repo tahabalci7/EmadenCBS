@@ -2,6 +2,7 @@ import html
 import math
 import xml.etree.ElementTree as ET
 
+from src.coordinate.area_qa import export_should_skip_polygon
 from src.coordinate.ring_geometry import (
     repair_lonlat_rings,
 )
@@ -90,6 +91,22 @@ class KMLExporter:
             encoding="utf-8",
             xml_declaration=True,
         )
+
+        return cls.export_review(project_model)
+
+    @classmethod
+    def export_review(cls, project_model):
+        polygons = getattr(project_model, "polygons", None) or []
+        skipped = [
+            polygon
+            for polygon in polygons
+            if export_should_skip_polygon(polygon)
+        ]
+        return {
+            "held_for_review": bool(skipped),
+            "skipped_count": len(skipped),
+            "skipped_polygons": skipped,
+        }
 
     @classmethod
     def _add_styles(cls, document):
@@ -258,6 +275,9 @@ class KMLExporter:
             placemark_serial = 0
 
             for polygon in type_polygons:
+                if export_should_skip_polygon(polygon):
+                    continue
+
                 if polygon.get("geometry_type") == "POINT":
                     placemark_serial = cls._add_point_placemarks(
                         folder,
