@@ -27,6 +27,7 @@ from src.coordinate.pipeline_contract import (
     KML_RING_STILL_CROSSED,
     NO_COORDINATE_TABLE,
     POINTS_NO_POLYGON,
+    RING_COUNT_MISMATCH,
     collect_pipeline_diagnostics,
     inspect_kml_polygons,
     reason_codes,
@@ -237,6 +238,7 @@ class LayoutCapabilityMapTests(unittest.TestCase):
                 "grouping_typing",
                 "metadata_kml_naming",
                 "coordinate_appendix_index",
+                "multipart_ruhsat_rings",
             ),
         )
         for item in LAYOUT_CLASSES:
@@ -311,6 +313,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "appendix_pages_beyond_fast_scan",
             layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "slash_ring_labels_split_polygons",
+            layout_class("multipart_ruhsat_rings")["capabilities"],
+        )
+        self.assertIn(
+            "ring_count_mismatch_reported",
+            layout_class("multipart_ruhsat_rings")["capabilities"],
         )
 
     def test_extract_coordinates_still_returns_a_list(self):
@@ -2240,6 +2250,276 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
                 [{"y": easting, "x": northing} for easting, northing in spread],
             )
         )
+
+
+class MultipartRuhsatRingsClassTests(unittest.TestCase):
+    """Tablo-3 class: separately numbered rings stay separate polygons."""
+
+    def test_slash_ring_labels_emit_three_ruhsat_polygons(self):
+        rings = (
+            (1, 7, square_utm(434000, 4205000, 120)),
+            (2, 8, square_utm(435200, 4206200, 160)),
+            (3, 21, square_utm(436500, 4207800, 220)),
+        )
+        rows = []
+        for ring_id, vertex_count, pairs in rings:
+            labels = [
+                f"{ring_id}/{index}"
+                for index in range(1, len(pairs) + 1)
+            ]
+            self.assertEqual(len(labels), 4)
+            self.assertGreaterEqual(vertex_count, 4)
+            rows.extend(stacked_utm_lines(labels, pairs))
+
+        text = page(
+            12,
+            "Tablo 3. 201300587 Sicil Numaralı Ruhsat Alanı "
+            "ve Sınır Koordinatları",
+            *CRS,
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            *rows,
+            "Toplam Alan: 1959,7 ha",
+        )
+        parsed = parse_coordinate_blocks(text)
+        self.assertGreaterEqual(len(parsed), 12)
+        groups = {
+            point.get("polygon_group")
+            for point in parsed
+        }
+        self.assertEqual(groups, {"RING_1", "RING_2", "RING_3"})
+        self.assertTrue(
+            all(
+                point.get("declared_set_ha") == 1959.7
+                for point in parsed
+            )
+        )
+        self.assertTrue(
+            all(
+                point.get("declared_ha") in (None, "")
+                for point in parsed
+            )
+        )
+        self.assertEqual(
+            parsed[0].get("declared_area_scope"),
+            "multipart_total",
+        )
+
+        pipeline = run_coordinate_pipeline(text)
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+        ]
+        self.assertEqual(len(ruhsat), 3)
+        self.assertEqual(
+            {polygon["polygon_group"] for polygon in ruhsat},
+            {"RING_1", "RING_2", "RING_3"},
+        )
+        self.assertTrue(
+            all(
+                polygon.get("declared_set_ha") == 1959.7
+                for polygon in ruhsat
+            )
+        )
+        self.assertNotIn(RING_COUNT_MISMATCH, pipeline["reason_codes"])
+
+        names = {
+            KMLExporter._polygon_display_name(
+                polygon["table_type"],
+                polygon["polygon_group"],
+                index,
+            )
+            for index, polygon in enumerate(ruhsat, start=1)
+        }
+        self.assertEqual(
+            names,
+            {"Ruhsat Alanı 1", "Ruhsat Alanı 2", "Ruhsat Alanı 3"},
+        )
+
+        model = ProjectModel(
+            "witness.pdf",
+            pipeline["coordinates"],
+            pipeline["polygons"],
+            pipeline["tables"],
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "multipart.kml")
+            KMLExporter.export(model, path)
+            tree = ET.parse(path)
+            ns = {"k": "http://www.opengis.net/kml/2.2"}
+            placemarks = [
+                node.text
+                for node in tree.findall(".//k:Placemark/k:name", ns)
+            ]
+        self.assertEqual(
+            sorted(placemarks),
+            ["Ruhsat Alanı 1", "Ruhsat Alanı 2", "Ruhsat Alanı 3"],
+        )
+
+    def test_single_slash_ring_stays_one_polygon(self):
+        text = page(
+            1,
+            "Tablo 1. Ruhsat Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                ("1/1", "1/2", "1/3", "1/4"),
+                square_utm(),
+            ),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+        ]
+        self.assertEqual(len(ruhsat), 1)
+        self.assertEqual(ruhsat[0]["polygon_group"], "DEFAULT")
+        self.assertNotIn(RING_COUNT_MISMATCH, pipeline["reason_codes"])
+
+    def test_sira_no_restart_splits_two_rings(self):
+        text = page(
+            4,
+            "Tablo 4. Mevcut ÇED Alanı Koordinatları",
+            *CRS,
+            "Sıra No SAĞA (Y) YUKARI (X)",
+            *stacked_utm_lines(
+                ("1", "2", "3", "4"),
+                square_utm(450000, 4210000, 80),
+            ),
+            "Sıra No SAĞA (Y) YUKARI (X)",
+            *stacked_utm_lines(
+                ("1", "2", "3", "4"),
+                square_utm(451200, 4211400, 90),
+            ),
+            "Alan: 11,15 ha",
+            "Alan: 9,41 ha",
+            "Toplam Alan: 20,56 ha",
+        )
+        pipeline = run_coordinate_pipeline(text)
+        ced = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"]
+            in {"CED_ALANI", "MEVCUT_CED_ALANI", "YENI_CED_ALANI"}
+        ]
+        self.assertEqual(len(ced), 2)
+        self.assertEqual(
+            {polygon["polygon_group"] for polygon in ced},
+            {"RING_1", "RING_2"},
+        )
+        self.assertTrue(
+            all(
+                polygon.get("declared_set_ha") == 20.56
+                for polygon in ced
+            )
+        )
+
+    def test_labeled_stem_change_splits_t1_and_ced_blocks(self):
+        text = page(
+            4,
+            "Tablo 4. Mevcut ÇED Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                ("T1_1", "T1_2", "T1_3", "T1_4"),
+                square_utm(450000, 4210000, 100),
+            ),
+            *stacked_utm_lines(
+                ("ÇED-1", "ÇED-2", "ÇED-3", "ÇED-4"),
+                square_utm(451400, 4211600, 90),
+            ),
+            "Toplam Alan: 20,56 ha",
+        )
+        parsed = parse_coordinate_blocks(text)
+        groups = {
+            point.get("polygon_group")
+            for point in parsed
+        }
+        self.assertEqual(groups, {"RING_1", "RING_2"})
+        pipeline = run_coordinate_pipeline(text)
+        ced = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"]
+            in {"CED_ALANI", "MEVCUT_CED_ALANI", "YENI_CED_ALANI"}
+        ]
+        self.assertEqual(len(ced), 2)
+
+    def test_multipart_ruhsat_still_counts_as_ruhsat_present(self):
+        text = "\n".join(
+            [
+                page(
+                    12,
+                    "Tablo 3. Sicil Numaralı Ruhsat Alanı "
+                    "Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("1/1", "1/2", "1/3", "1/4"),
+                        square_utm(434000, 4205000, 100),
+                    ),
+                    *stacked_utm_lines(
+                        ("2/1", "2/2", "2/3", "2/4"),
+                        square_utm(435200, 4206200, 110),
+                    ),
+                    "Toplam Alan: 1959,7 ha",
+                ),
+                page(
+                    13,
+                    "Tablo 4. ÇED Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("C1", "C2", "C3", "C4"),
+                        square_utm(434400, 4205400, 40),
+                    ),
+                ),
+            ]
+        )
+        pipeline = run_coordinate_pipeline(text)
+        types = {
+            polygon["table_type"]
+            for polygon in pipeline["polygons"]
+        }
+        self.assertIn("RUHSAT_ALANI", types)
+        self.assertTrue(
+            types & {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
+        )
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+        ]
+        self.assertEqual(len(ruhsat), 2)
+
+    def test_merged_default_group_reports_ring_count_mismatch(self):
+        coordinates = []
+        for ring, origin in (
+            (1, (434000, 4205000)),
+            (2, (435200, 4206200)),
+            (3, (436500, 4207800)),
+        ):
+            for index, (easting, northing) in enumerate(
+                square_utm(*origin, 80),
+                start=1,
+            ):
+                coordinates.append(
+                    {
+                        "name": f"{ring}/{index}",
+                        "label": f"{ring}/{index}",
+                        "y": easting,
+                        "x": northing,
+                        "table_type": "RUHSAT_ALANI",
+                        "section": "Ruhsat Alanı",
+                        "table_index": 1,
+                        "polygon_group": "DEFAULT",
+                    }
+                )
+        polygons = PolygonBuilder.build(coordinates)
+        self.assertEqual(len(polygons), 1)
+        diagnostics = collect_pipeline_diagnostics(
+            tables=["accepted-table"],
+            coordinates=coordinates,
+            polygons=polygons,
+        )
+        self.assertIn(RING_COUNT_MISMATCH, reason_codes(diagnostics))
 
 
 if __name__ == "__main__":

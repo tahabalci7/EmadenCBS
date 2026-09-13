@@ -769,11 +769,18 @@ class TableDetector:
 
     LABEL_SERIES_PATTERNS = (
         re.compile(
+            r"^(\d+)\s*/\s*(\d+)$",
+        ),
+        re.compile(
             r"^([A-ZÇĞİÖŞÜ]+)\.?(\d+)$",
             re.IGNORECASE,
         ),
         re.compile(
             r"^([A-ZÇĞİÖŞÜ]+)\.?(\d+)\.\d+$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^([A-ZÇĞİÖŞÜ]+\d*)[_-](\d+)$",
             re.IGNORECASE,
         ),
         re.compile(

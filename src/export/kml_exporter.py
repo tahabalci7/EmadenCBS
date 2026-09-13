@@ -412,6 +412,7 @@ class KMLExporter:
         )
 
         number = polygon_index
+        parts = []
 
         if (
             polygon_group
@@ -436,7 +437,17 @@ class KMLExporter:
                 )
 
         # Tek ruhsat için numara göstermeye gerek yok.
+        # Multipart RING_n parts keep the ring id in the placemark name.
         if table_type == "RUHSAT_ALANI":
+            if (
+                polygon_group
+                and str(polygon_group).startswith("RING_")
+                and parts
+                and parts[-1].isdigit()
+            ):
+                return (
+                    f"Ruhsat Alanı {int(parts[-1])}"
+                )
             return "Ruhsat Alanı"
 
         names = {

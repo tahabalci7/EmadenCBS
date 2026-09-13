@@ -496,6 +496,18 @@ class CoordinateEngine:
                 "polygon_heading",
                 "",
             ),
+            "declared_ha": point.get(
+                "declared_ha"
+            ),
+            "declared_set_ha": point.get(
+                "declared_set_ha"
+            ),
+            "declared_area_scope": point.get(
+                "declared_area_scope"
+            ),
+            "expected_ring_count": point.get(
+                "expected_ring_count"
+            ),
 
             # ---------------------------------------------
             # KOORDİNAT SİSTEMİ

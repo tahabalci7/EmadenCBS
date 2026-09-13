@@ -9,6 +9,7 @@ from collections import OrderedDict
 
 from src.coordinate.layout_capabilities import LAYOUT_CLASS_IDS
 from src.coordinate.ring_geometry import count_lonlat_crossings
+from src.coordinate.state_machine import labeled_multipart_ring_count
 
 
 NO_COORDINATE_TABLE = "NO_COORDINATE_TABLE"
@@ -19,6 +20,7 @@ CRS_INHERITED = "CRS_INHERITED"
 CRS_UNRESOLVED_NO_TRANSFORM = "CRS_UNRESOLVED_NO_TRANSFORM"
 KML_NO_WGS84 = "KML_NO_WGS84"
 KML_RING_STILL_CROSSED = "KML_RING_STILL_CROSSED"
+RING_COUNT_MISMATCH = "RING_COUNT_MISMATCH"
 
 REASON_CODES = (
     NO_COORDINATE_TABLE,
@@ -29,6 +31,7 @@ REASON_CODES = (
     CRS_UNRESOLVED_NO_TRANSFORM,
     KML_NO_WGS84,
     KML_RING_STILL_CROSSED,
+    RING_COUNT_MISMATCH,
 )
 
 
@@ -167,6 +170,9 @@ def collect_pipeline_diagnostics(
 
     diagnostics.extend(
         _group_size_diagnostics(coordinates, polygons)
+    )
+    diagnostics.extend(
+        _ring_count_diagnostics(coordinates, polygons)
     )
     diagnostics.extend(
         _crs_export_diagnostics(coordinates, extra)
@@ -324,6 +330,58 @@ def _group_size_diagnostics(coordinates, polygons):
                 detail=(
                     "Coordinate group has fewer than 3 vertices and "
                     "was not emitted as a polygon."
+                ),
+            )
+        )
+    return diagnostics
+
+
+def _ring_count_diagnostics(coordinates, polygons):
+    """Prefer labeled ring count over a single merged hull near the total."""
+
+    if not coordinates:
+        return []
+
+    grouped = {}
+    for item in coordinates:
+        key = (
+            item.get("table_type", "DIGER"),
+            item.get("table_index", 0),
+        )
+        grouped.setdefault(key, []).append(item)
+
+    polygon_counts = {}
+    for polygon in polygons or []:
+        if polygon.get("geometry_type") == "POINT":
+            continue
+        key = (
+            polygon.get("table_type", "DIGER"),
+            polygon.get("table_index", 0),
+        )
+        polygon_counts[key] = polygon_counts.get(key, 0) + 1
+
+    diagnostics = []
+    for key, points in grouped.items():
+        expected = labeled_multipart_ring_count(points)
+        if expected < 2:
+            continue
+        actual = polygon_counts.get(key, 0)
+        if actual >= expected:
+            continue
+        table_type, table_index = key
+        diagnostics.append(
+            make_diagnostic(
+                RING_COUNT_MISMATCH,
+                severity="error",
+                stage="polygon_builder",
+                class_id="multipart_ruhsat_rings",
+                table_index=table_index,
+                table_type=table_type,
+                expected_ring_count=expected,
+                polygon_count=actual,
+                detail=(
+                    f"Labels show {expected} rings but "
+                    f"{actual} polygon(s) were built."
                 ),
             )
         )

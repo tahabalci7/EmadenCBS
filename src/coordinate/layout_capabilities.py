@@ -221,6 +221,35 @@ LAYOUT_CLASSES = (
             "is not the same as this appendix label EK-1."
         ),
     },
+    {
+        "id": "multipart_ruhsat_rings",
+        "title": "Multi-part ruhsat / ÇED rings",
+        "modules": (
+            "src.coordinate.state_machine",
+            "src.coordinate.polygon_builder",
+            "src.coordinate.pipeline_contract",
+            "src.export.kml_exporter",
+        ),
+        "capabilities": (
+            "slash_ring_labels_split_polygons",
+            "sequence_restart_splits_rings",
+            "labeled_stem_change_splits_rings",
+            "total_area_attaches_to_set",
+            "ring_count_mismatch_reported",
+        ),
+        "contract": (
+            "Separately numbered rings in one ruhsat or ÇED table "
+            "(1/n then 2/n, a Sıra No restart after ≥3 vertices, or "
+            "a labeled stem change such as T1_* then ÇED-*) become "
+            "one polygon per ring, not a single merged hull. A lone "
+            "TOPLAM ALAN attaches to the multi-part set "
+            "(declared_set_ha), not to each ring as declared_ha. "
+            "When labels show N parts but fewer polygons are built, "
+            "RING_COUNT_MISMATCH is reported so area QA cannot pass "
+            "a wrong one-ring merge that happens to match the total. "
+            "Multipart ruhsat still counts as ruhsat present."
+        ),
+    },
 )
 
 LAYOUT_CLASS_IDS = tuple(item["id"] for item in LAYOUT_CLASSES)
