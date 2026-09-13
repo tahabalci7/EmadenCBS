@@ -265,6 +265,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("metadata_kml_naming")["capabilities"],
         )
         self.assertIn(
+            "mine_type_allowlist",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
+            "mine_type_missing_flag_for_destekci",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
             "late_caption_not_previous_continuation",
             layout_class("table_continuation")["capabilities"],
         )
@@ -1844,6 +1852,55 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
         self.assertEqual(Path(relative).parts[0], "Ankara")
         self.assertEqual(Path(relative).parts[1], "Ek-1")
         self.assertTrue(relative.endswith(".kml"))
+
+    def test_mine_type_allowlist_drops_junk_keeps_compounds(self):
+        """Adana-class title leftovers are not a maden cinsi."""
+
+        extractor = ProjectInfoExtractor()
+        krom = extractor.extract(
+            "\n".join(
+                [
+                    "Nihai ÇED Raporu",
+                    "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                    "SICIL NO: 42077",
+                    "MADEN CİNSİ: KROM / İŞLETME",
+                ]
+            )
+        )
+        self.assertEqual(krom["mine_type"], "KROM")
+        self.assertFalse(krom["mine_type_missing"])
+        self.assertFalse(
+            ProjectInfoExtractor.is_missing_mine_type(krom)
+        )
+
+        missing = extractor.extract("MADEN CİNSİ: MADENİ")
+        self.assertEqual(missing["mine_type"], "Bilinmiyor")
+        self.assertTrue(missing["mine_type_missing"])
+        self.assertTrue(
+            ProjectInfoExtractor.is_missing_mine_type(missing)
+        )
+
+        compound = extractor.extract("MADEN CİNSİ: KURŞUN-ÇİNKO")
+        self.assertEqual(compound["mine_type"], "KURŞUN-ÇİNKO")
+        self.assertFalse(compound["mine_type_missing"])
+
+        atik = extractor.extract("MADEN CİNSİ: ATIK / KALAY")
+        self.assertEqual(atik["mine_type"], "KALAY")
+        self.assertFalse(atik["mine_type_missing"])
+
+        name = ProjectInfoExtractor.build_export_filename(
+            {
+                "license_no": "42077",
+                "company": "Örnek Madencilik A.Ş.",
+                "mine_type": "ÇÖZELTİ / MADENLER",
+            }
+        )
+        self.assertEqual(
+            name,
+            "42077 - Örnek Madencilik A.Ş. - Bilinmiyor",
+        )
+        self.assertNotIn("ÇÖZELTİ", name)
+        self.assertNotIn("MADENLER", name)
 
 
 class CoordinateAppendixIndexClassTests(unittest.TestCase):

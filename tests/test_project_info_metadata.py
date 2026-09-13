@@ -101,9 +101,10 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         self.assertTrue(name.startswith("42077"))
         self.assertEqual(
             name,
-            "42077 - Söğütsen Seramik Sanayi - Bilinmiyor",
+            "42077 - Söğütsen Seramik Sanayi - MANYEZİT",
         )
         self.assertNotIn("NUMARALI", name)
+        self.assertNotIn("MADEN", name.split(" - ")[-1])
         self.assertFalse(
             ProjectInfoExtractor.is_missing_license_no(
                 {
@@ -124,7 +125,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             file_name,
-            "38302 - Bilinmiyor - Bilinmiyor",
+            "38302 - Bilinmiyor - BİTÜMLÜ ŞEYL",
         )
         self.assertTrue(file_name.startswith("38302"))
         self.assertNotIn("NUMARALI", file_name)
@@ -139,7 +140,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             name,
-            "Bilinmiyor - Ülkem İnşaat Mad. - Bilinmiyor",
+            "Bilinmiyor - Ülkem İnşaat Mad. - PERLİT",
         )
         self.assertTrue(name.startswith("Bilinmiyor"))
         self.assertNotIn("NUMARALI", name)
@@ -218,7 +219,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         name = ProjectInfoExtractor.build_export_filename(info)
         self.assertTrue(name.startswith("Bilinmiyor - "))
-        self.assertIn("PERLIT", name)
+        self.assertIn("PERLİT", name)
         self.assertNotEqual(
             name.split(" - ", 1)[0],
             "Ülkem İnşaat Mad.",
@@ -250,6 +251,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         info = self.extractor.extract(text)
         self.assertEqual(info["mine_type"], "MANYEZİT")
         self.assertFalse(info["license_no_missing"])
+        self.assertFalse(info["mine_type_missing"])
         relative = ProjectInfoExtractor.build_export_relative_path(info)
         self.assertEqual(
             Path(relative),
