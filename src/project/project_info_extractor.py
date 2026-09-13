@@ -717,15 +717,31 @@ class ProjectInfoExtractor:
         r"\bER(?:[Iİ][SŞ][Iİ]M)?\b",
         flags=re.IGNORECASE,
     )
+    _COMPANY_REGISTRY_LABEL = re.compile(
+        r"(?:"
+        r"VERG[Iİ]\s+(?:NO(?:SU)?|NUMARASI|NUMARALI)|"
+        r"T[Iİ]CARET\s+ODASI(?:\s+S[Iİ]C[Iİ]L)?"
+        r"(?:\s*(?:NO(?:SU)?|NUMARASI|NUMARALI))?"
+        r")",
+        flags=re.IGNORECASE,
+    )
+    _COMPANY_REGISTRY_TAIL = re.compile(
+        r"^[\s/:.\-]*(?:\d{4,10}[\s/:.\-]*)*$"
+    )
+    _TICARET_ODASI_BEFORE = re.compile(
+        r"T[Iİ]CARET\s+ODASI\s*$",
+        flags=re.IGNORECASE,
+    )
 
     def _extract_license_no(self, text):
         """
         Ruhsat veya sicil numarasını gerçek ruhsat
         bağlamından çıkarır.
 
-        SİCİL ve ERİŞİM birlikte geçiyorsa SİCİL
-        seçilir. ER / ERİŞİM, sicil adayı varken
-        yedek olarak kullanılmaz. İR-1-1, R-1 vb.
+        SİCİL / RN / İR / Ruhsat Numaralı, ERİŞİM'den
+        önce gelir. VERGİ NUMARASI ve ticaret odası
+        sicili ruhsat değildir. ER / ERİŞİM, sicil
+        adayı varken yedek değildir. İR-1-1, R-1 vb.
         koordinat etiketleri ruhsat numarası sayılmaz.
         """
 
@@ -775,6 +791,22 @@ class ProjectInfoExtractor:
         # gevşek "SİCİL ... sayı" tarayıcısı ER'yi
         # yakalamasın diye aradaki ER etiketini atlar.
         return (
+            (
+                re.compile(
+                    r"\bRN\s*[:.]\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b[Iİ]R\s*[:.]\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
             (
                 re.compile(
                     r"\bS\s*[:.]\s*(\d{4,10})\b",
@@ -885,6 +917,9 @@ class ProjectInfoExtractor:
                 if self._number_is_erisim_tagged(text, match):
                     continue
 
+                if self._number_is_company_registry(text, match):
+                    continue
+
                 candidate = self._clean_value(
                     match.group(number_group)
                 )
@@ -908,6 +943,30 @@ class ProjectInfoExtractor:
             : match.start(number_group)
         ]
         return bool(self._ERISIM_PREFIX.search(prefix))
+
+    def _number_is_company_registry(self, text, match):
+        """VERGİ veya ticaret odası sicilini ruhsat sayma."""
+
+        number_group = 1
+        if match.lastindex and match.lastindex >= 2:
+            number_group = match.lastindex
+
+        num_start = match.start(number_group)
+        prefix = text[max(0, num_start - 96):num_start]
+        last_label = None
+        for label in self._COMPANY_REGISTRY_LABEL.finditer(prefix):
+            last_label = label
+        if last_label is not None:
+            tail = prefix[last_label.end():]
+            if self._COMPANY_REGISTRY_TAIL.match(tail):
+                return True
+
+        before_label = text[
+            max(0, match.start() - 24):match.start()
+        ]
+        return bool(
+            self._TICARET_ODASI_BEFORE.search(before_label)
+        )
 
     @classmethod
     def _is_plausible_license_no(

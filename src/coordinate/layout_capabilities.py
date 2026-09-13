@@ -190,6 +190,7 @@ LAYOUT_CLASSES = (
             "export_stem_includes_mine_type",
             "license_no_missing_flag_for_destekci",
             "sicil_preferred_over_erisim",
+            "vergi_not_license_no",
         ),
         "contract": (
             "Restore {İL}/{Ek-1|Ek-2}/{sicil} - {firma} - "
@@ -204,7 +205,10 @@ LAYOUT_CLASSES = (
             "title carries both SİCİL and ERİŞİM (S:{n} SİCİL "
             "ER:{m}, S:{n}(ER:{m}), Sicil:{n}, RUHSAT SİCİL "
             "NO), license_no / KML stem / balloon use SİCİL, "
-            "never the ER number."
+            "never the ER number. RN: / İR: / Ruhsat Numaralı "
+            "are ruhsat codes (İR-1-1 vertex labels are not). "
+            "VERGİ NUMARASI and TİCARET ODASI SİCİL are not "
+            "license_no."
         ),
     },
     {

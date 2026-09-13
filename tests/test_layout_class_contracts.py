@@ -269,6 +269,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("metadata_kml_naming")["capabilities"],
         )
         self.assertIn(
+            "vergi_not_license_no",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
             "late_caption_not_previous_continuation",
             layout_class("table_continuation")["capabilities"],
         )
@@ -1904,6 +1908,29 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
                 balloon = info["license_no"]
                 self.assertEqual(balloon, sicil)
                 self.assertNotEqual(balloon, erisim)
+
+    def test_vergi_and_ticaret_odasi_are_not_ruhsat(self):
+        text = "\n".join(
+            [
+                "Nihai ÇED Raporu",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "VERGİ NUMARASI / TİCARET ODASI SİCİL NO",
+                "7810523944 / 936009",
+                "İR: 201300587 , ER: 3297705",
+                "RN:201300587",
+                "201300587 Ruhsat Numaralı BOKSİT OCAĞI",
+            ]
+        )
+        info = ProjectInfoExtractor().extract(text)
+        self.assertEqual(info["license_no"], "201300587")
+        self.assertNotIn(
+            info["license_no"],
+            {"7810523944", "936009", "3297705"},
+        )
+        self.assertFalse(info["license_no_missing"])
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("201300587 - "))
+        self.assertFalse(name.startswith("7810523944"))
 
 
 class CoordinateAppendixIndexClassTests(unittest.TestCase):

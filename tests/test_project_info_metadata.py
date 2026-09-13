@@ -452,6 +452,56 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         self.assertEqual(info["erisim_no"], "2542506")
         self.assertFalse(info["license_no_missing"])
 
+    def test_vergi_and_ticaret_odasi_sicil_are_not_license(self):
+        text = "\n".join(
+            [
+                "NİHAİ ÇED RAPORU",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "VERGİ NUMARASI / TİCARET ODASI SİCİL NO",
+                "7810523944 / 936009",
+                "İR: 201300587 , ER: 3297705",
+                "RN:201300587",
+                "201300587 Ruhsat Numaralı BOKSİT OCAĞI",
+            ]
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "201300587")
+        self.assertNotEqual(info["license_no"], "7810523944")
+        self.assertNotEqual(info["license_no"], "936009")
+        self.assertNotEqual(info["license_no"], "3297705")
+        self.assertFalse(info["license_no_missing"])
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("201300587 - "))
+        self.assertFalse(name.startswith("7810523944"))
+        self.assertNotIn("936009", name.split(" - ", 1)[0])
+
+    def test_rn_and_ir_codes_beat_erisim(self):
+        text = "İR: 201300587 , ER: 1508418 ERİŞİM NUMARALI"
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "201300587")
+        self.assertNotEqual(info["license_no"], "1508418")
+        self.assertFalse(info["license_no_missing"])
+
+        info_rn = self.extractor.extract("RN:201300587 faaliyet")
+        self.assertEqual(info_rn["license_no"], "201300587")
+        self.assertFalse(info_rn["license_no_missing"])
+
+    def test_vergi_only_does_not_become_license_no(self):
+        text = (
+            "VERGİ NUMARASI / TİCARET ODASI SİCİL NO: "
+            "7810523944 / 936009"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "Bilinmiyor")
+        self.assertTrue(info["license_no_missing"])
+        self.assertTrue(
+            ProjectInfoExtractor.is_missing_license_no(info)
+        )
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("Bilinmiyor - "))
+        self.assertFalse(name.startswith("7810523944"))
+        self.assertFalse(name.startswith("936009"))
+
     def test_missing_sicil_still_flags_destekci(self):
         text = "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş."
         info = self.extractor.extract(text)
