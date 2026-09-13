@@ -146,7 +146,7 @@ LAYOUT_CLASSES = (
             "parenthetical_ced_is_not_tesisi_type",
             "geo_ring_not_inherit_auxiliary",
             "unattested_lattice_not_composite_ring",
-            "entrance_point_table_not_area_polygon",
+            "galeri_oversize_hull_is_pins",
             "sicil_nolu_alan_is_ruhsat",
         ),
         "contract": (
@@ -164,14 +164,14 @@ LAYOUT_CLASSES = (
             "STOK ring — including lon/lat y/x rings and L-shaped / "
             "partial 500 m meshes mixed with a compact tesisi cluster "
             "(do not require 60% of the full cartesian product). "
-            "Galeri Giriş / Galeri Girişi / Galeri Ağzı (without Alanı) "
-            "captions are entrance point lists — emit KML Point pins, "
-            "never a filled Galeri Alanı. A GALERI_ALANI hull larger "
-            "than 5000 m² is also pins unless the caption is an explicit "
-            "Galeri Alanı. Sicil Nolu Alan and Ruhsatlı Alan headings "
-            "type the ring as RUHSAT even when ÇED is also named. On an "
-            "EK-1 selected-site appendix page, the Sicil Nolu Alan colon "
-            "dual-CRS block is the ruhsat ring."
+            "GALERI_ALANI groups with fewer than 3 vertices, or a closed "
+            "hull larger than 5000 m², emit as KML Point pins — Galeri "
+            "Giriş lists are not filled area polygons. Compact Galeri "
+            "Alanı rings under that threshold stay polygons. Sicil Nolu "
+            "Alan and Ruhsatlı Alan headings type the ring as RUHSAT "
+            "even when ÇED is also named. On an EK-1 selected-site "
+            "appendix page, the Sicil Nolu Alan colon dual-CRS block "
+            "is the ruhsat ring."
         ),
     },
     {

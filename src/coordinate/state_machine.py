@@ -3095,12 +3095,10 @@ def _detect_area_type_on_text(line):
         if "OCAK ALANI" in normalized or "OCAK SAHASI" in normalized:
             return "OCAK_ALANI"
 
-        if TableClassifier._is_gallery_entrance_heading(normalized):
-            return "GALERI_GIRIS"
-
         if "GALERI" in normalized and (
             "ALAN" in normalized
             or "AGZI" in normalized
+            or "GIRIS" in normalized
         ):
             return "GALERI_ALANI"
 

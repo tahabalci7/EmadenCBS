@@ -5,41 +5,25 @@ from src.coordinate.ring_geometry import (
     repair_self_intersecting_rings,
     trim_invented_lattice_composite,
 )
-from src.coordinate.table_classifier import TableClassifier
 
 
 class PolygonBuilder:
 
-    # Galeri giriş lists are point clusters in most ÇED/PTD reports.
-    # If a closed hull exceeds this area, emit pins instead of a polygon.
+    # Galeri giriş koordinatları çoğu belgede nokta kümesidir.
+    # Kapalı poligon alanı bu eşiği aşarsa pin olarak tutulur.
     POINT_AREA_TYPES = {
         "GALERI_ALANI",
-        "GALERI_GIRIS",
     }
     POINT_AREA_M2_THRESHOLD = 5000.0
 
     @classmethod
-    def _heading_is_explicit_gallery_area(cls, heading):
-        normalized = TableClassifier._normalize(heading or "")
-        if "GALERI" not in normalized:
-            return False
-        if "GIRIS" in normalized:
-            return False
-        return "ALAN" in normalized
-
-    @classmethod
-    def _should_emit_as_pins(cls, table_type, points, heading=""):
-        if table_type == "GALERI_GIRIS":
-            return True
+    def _should_emit_as_pins(cls, table_type, points):
         if table_type not in cls.POINT_AREA_TYPES:
             return False
-        if cls._heading_is_explicit_gallery_area(heading):
-            if len(points) < 3:
-                return False
-            return cls._calculate_area(points) > 100000.0
         if len(points) < 3:
             return True
-        return cls._calculate_area(points) > cls.POINT_AREA_M2_THRESHOLD
+        area = cls._calculate_area(points)
+        return area > cls.POINT_AREA_M2_THRESHOLD
 
     @classmethod
     def build(cls, coordinates):
@@ -203,15 +187,9 @@ class PolygonBuilder:
             group_points = trim_invented_lattice_composite(
                 group["points"]
             )
-            heading = (
-                group.get("polygon_heading")
-                or group.get("section")
-                or ""
-            )
             if cls._should_emit_as_pins(
                 group.get("table_type", "DIGER"),
                 group_points,
-                heading,
             ):
                 ring_group = dict(group)
                 ring_group["points"] = group_points

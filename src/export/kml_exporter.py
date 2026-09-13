@@ -23,7 +23,6 @@ class KMLExporter:
         # Madencilik / yardımcı alanlar
         "OCAK_ALANI": "7f0080ff",
             "GALERI_ALANI": "7f800080",
-            "GALERI_GIRIS": "7f800080",
             "SANTIYE_ALANI": "7f808080",
         "BITKISEL_TOPRAK_ALANI": "7f00ff80",
         "PASA_ALANI": "7f404080",
@@ -374,7 +373,6 @@ class KMLExporter:
             "TESIS_ALANI": "Tesis Alanı",
             "DEPOLAMA_ALANI": "Depolama Alanı",
             "GALERI_ALANI": "Galeri Alanı",
-            "GALERI_GIRIS": "Galeri Giriş",
             "CALISILMAYACAK_ALAN": "Çalışılmayacak Alan",
             "SANTIYE_ALANI": "Şantiye Alanı",
             "BITKISEL_TOPRAK_ALANI": (
@@ -449,7 +447,6 @@ class KMLExporter:
             "ISLETME_IZIN_ALANI": "İşletme İzin Alanı",
             "OCAK_ALANI": "Ocak Alanı",
             "GALERI_ALANI": "Galeri Alanı",
-            "GALERI_GIRIS": "Galeri Giriş",
             "SANTIYE_ALANI": "Şantiye Alanı",
             "BITKISEL_TOPRAK_ALANI": "Bitkisel Toprak Alanı",
             "PASA_ALANI": "Pasa Alanı",

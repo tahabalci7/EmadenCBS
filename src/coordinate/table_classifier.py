@@ -55,17 +55,16 @@ class TableClassifier:
             return "CALISILMAYACAK_ALAN"
 
         # -----------------------------------------------------
-        # 2. GALERİ — giriş/entrance lists are not area rings
+        # 2. GALERİ
         # -----------------------------------------------------
-
-        if cls._is_gallery_entrance_heading(normalized):
-            return "GALERI_GIRIS"
 
         if cls._contains_any(
             normalized,
             [
                 "GALERI AGZI",
                 "GALERI ALANI",
+                "GALERI GIRISI",
+                "GALERI GIRIS",
                 "GALERI",
             ],
         ):
@@ -388,13 +387,6 @@ class TableClassifier:
         }
     )
 
-    # Entrance / mouth coordinate lists. Not closed into area polygons.
-    POINT_LIST_AREA_TYPES = frozenset(
-        {
-            "GALERI_GIRIS",
-        }
-    )
-
     DOMINANT_AREA_TYPES = frozenset(
         {
             "RUHSAT_ALANI",
@@ -409,27 +401,6 @@ class TableClassifier:
     # ---------------------------------------------------------
     # TABLO BAŞLIĞINI BUL
     # ---------------------------------------------------------
-
-    @classmethod
-    def _is_gallery_entrance_heading(cls, normalized: str) -> bool:
-        """Galeri giriş / ağzı point lists, not Galeri Alanı rings."""
-
-        if "GALERI" not in normalized:
-            return False
-
-        if cls._contains_any(
-            normalized,
-            [
-                "GIRISI",
-                "GIRIS",
-            ],
-        ):
-            return True
-
-        return (
-            "AGZI" in normalized
-            and "ALAN" not in normalized
-        )
 
     @classmethod
     def _looks_like_ruhsat_heading(cls, normalized: str) -> bool:
@@ -450,10 +421,6 @@ class TableClassifier:
             and "NOLU" in normalized
             and "ALAN" in normalized
         )
-
-    @classmethod
-    def is_point_list_area_type(cls, table_type: str) -> bool:
-        return table_type in cls.POINT_LIST_AREA_TYPES
 
     @classmethod
     def strip_parentheticals(cls, text: str) -> str:

@@ -289,7 +289,7 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("coordinate_record_layouts")["capabilities"],
         )
         self.assertIn(
-            "entrance_point_table_not_area_polygon",
+            "galeri_oversize_hull_is_pins",
             layout_class("grouping_typing")["capabilities"],
         )
         self.assertIn(
@@ -1961,15 +1961,15 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
     def test_headings_distinguish_entrance_points_from_gallery_area(self):
         self.assertEqual(
             TableClassifier.classify("Galeri Giriş Koordinatları"),
-            "GALERI_GIRIS",
+            "GALERI_ALANI",
         )
         self.assertEqual(
             detect_area_type("Galeri Giriş Koordinatları"),
-            "GALERI_GIRIS",
+            "GALERI_ALANI",
         )
         self.assertEqual(
             TableClassifier.classify("Galeri Girişi Koordinatları"),
-            "GALERI_GIRIS",
+            "GALERI_ALANI",
         )
         self.assertEqual(
             TableClassifier.classify("2 No.lu Galeri Alanı (2,20 ha)"),
@@ -2052,7 +2052,7 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
         giris_points = [
             point
             for point in parsed
-            if point.get("table_type_override") == "GALERI_GIRIS"
+            if point.get("table_type_override") == "GALERI_ALANI"
         ]
         self.assertEqual(len(giris_points), 7)
 
@@ -2067,13 +2067,13 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
             feature
             for feature in pipeline["polygons"]
             if feature.get("geometry_type") == "POINT"
-            and feature["table_type"] in {"GALERI_GIRIS", "GALERI_ALANI"}
+            and feature["table_type"] == "GALERI_ALANI"
         ]
         galeri_area = [
             feature
             for feature in pipeline["polygons"]
             if feature.get("geometry_type", "POLYGON") == "POLYGON"
-            and feature["table_type"] in {"GALERI_ALANI", "GALERI_GIRIS"}
+            and feature["table_type"] == "GALERI_ALANI"
             and feature["area_ha"] > 100
         ]
         self.assertEqual(len(ruhsat), 1)
@@ -2100,7 +2100,7 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
                     f"{latitude:.8f}:{longitude:.8f}",
                 )
             )
-        galeri_utm = square_utm(750200, 4169100, 140)
+        galeri_utm = square_utm(750200, 4169100, 60)
         text = page(
             37,
             "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
@@ -2185,8 +2185,8 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
         self.assertEqual(len(polygons), 1)
         self.assertEqual(len(points), 7)
 
-    def test_large_galeri_hull_without_alani_caption_is_pins(self):
-        """Safety net: a huge GALERI_ALANI hull is pins, not a filled area."""
+    def test_galeri_pin_rule_is_type_plus_area_threshold(self):
+        """Local rule: GALERI_ALANI + <3 verts or hull > 5000 m² → pins."""
 
         spread = (
             (750000.0, 4168000.0),
@@ -2194,6 +2194,7 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
             (753000.0, 4172000.0),
             (750000.0, 4172000.0),
         )
+        compact = square_utm(750200, 4169100, 60)
         self.assertGreater(
             PolygonBuilder._calculate_area(
                 [{"y": easting, "x": northing} for easting, northing in spread]
@@ -2204,17 +2205,24 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
             PolygonBuilder._should_emit_as_pins(
                 "GALERI_ALANI",
                 [{"y": easting, "x": northing} for easting, northing in spread],
-                "Galeri Koordinatları",
+            )
+        )
+        self.assertTrue(
+            PolygonBuilder._should_emit_as_pins(
+                "GALERI_ALANI",
+                [{"y": 750200.0, "x": 4169100.0}],
             )
         )
         self.assertFalse(
             PolygonBuilder._should_emit_as_pins(
                 "GALERI_ALANI",
-                [
-                    {"y": easting, "x": northing}
-                    for easting, northing in square_utm(750200, 4169100, 140)
-                ],
-                "2 No.lu Galeri Alanı (2,20 ha)",
+                [{"y": easting, "x": northing} for easting, northing in compact],
+            )
+        )
+        self.assertFalse(
+            PolygonBuilder._should_emit_as_pins(
+                "RUHSAT_ALANI",
+                [{"y": easting, "x": northing} for easting, northing in spread],
             )
         )
 
