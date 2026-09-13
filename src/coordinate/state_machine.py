@@ -2024,7 +2024,9 @@ def infer_labeled_ring_keys(points):
     Breaks a single table into parts when labels show:
     - slash ring/vertex ids (``1/7`` then ``2/1``)
     - a label-series stem change (``T1_1`` then ``CED-1``)
-    - a numbered series that restarts after at least 3 vertices
+    - a bare Sıra No series (``1..n``) that restarts after ≥3 vertices.
+      Letter prefixes such as ``R1`` may repeat on a continuation page
+      and are not treated as a new ring.
     """
 
     keys = []
@@ -2071,6 +2073,7 @@ def infer_labeled_ring_keys(points):
 
         if (
             not is_slash
+            and stem == ""
             and number <= last_number
             and stem_count >= 3
             and _looks_like_new_ring_start(

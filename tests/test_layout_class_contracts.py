@@ -2377,22 +2377,38 @@ class MultipartRuhsatRingsClassTests(unittest.TestCase):
         self.assertNotIn(RING_COUNT_MISMATCH, pipeline["reason_codes"])
 
     def test_sira_no_restart_splits_two_rings(self):
+        def stacked_utm_geo(labels, pairs, origin_lat=37.90, origin_lon=35.20):
+            lines = []
+            for index, (label, (easting, northing)) in enumerate(
+                zip(labels, pairs)
+            ):
+                lines.extend(
+                    (
+                        label,
+                        str(easting),
+                        str(northing),
+                        f"{origin_lat + index * 0.001:.7f}",
+                        f"{origin_lon + index * 0.001:.7f}",
+                    )
+                )
+            return tuple(lines)
+
         text = page(
             4,
             "Tablo 4. Mevcut ÇED Alanı Koordinatları",
             *CRS,
-            "Sıra No SAĞA (Y) YUKARI (X)",
-            *stacked_utm_lines(
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            *stacked_utm_geo(
                 ("1", "2", "3", "4"),
                 square_utm(450000, 4210000, 80),
             ),
-            "Sıra No SAĞA (Y) YUKARI (X)",
-            *stacked_utm_lines(
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            *stacked_utm_geo(
                 ("1", "2", "3", "4"),
                 square_utm(451200, 4211400, 90),
+                origin_lat=37.91,
+                origin_lon=35.21,
             ),
-            "Alan: 11,15 ha",
-            "Alan: 9,41 ha",
             "Toplam Alan: 20,56 ha",
         )
         pipeline = run_coordinate_pipeline(text)
