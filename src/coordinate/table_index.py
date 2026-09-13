@@ -66,14 +66,29 @@ TOC_LEAVE_RE = re.compile(
 APPENDIX_EK1_RE = re.compile(r"\bEK\s*[-.]?\s*1\b")
 APPENDIX_BARE_ONE_RE = re.compile(r"^1\s*[-.)]")
 EK1_APPENDIX_NUMBER = "EK-1"
+EKLER_HEADING_CANONICAL = {
+    "EKLER",
+    "EKLER LISTESI",
+    "EK LISTESI",
+}
+
+# Same-line or stacked UTM easting/northing, not dust-monitor X/Y.
+UTM_PAIR_RE = re.compile(
+    r"\b\d{6}(?:[.,]\d+)?(?:\s+|[\s]*[:;][\s]*)\d{6,7}(?:[.,]\d+)?\b"
+)
+UTM_EASTING_RE = re.compile(r"\b\d{6}(?:[.,]\d+)?\b")
+UTM_NORTHING_RE = re.compile(r"\b[3-5]\d{6}(?:[.,]\d+)?\b")
 
 INDEX_WINDOW_PAGES = 40
 CONTINUATION_BEFORE = 1
 CONTINUATION_AFTER = 3
 APPENDIX_CONTINUATION_BEFORE = 1
-APPENDIX_CONTINUATION_AFTER = 10
+APPENDIX_CONTINUATION_AFTER = 15
 APPENDIX_PEEK_BEFORE = 5
 APPENDIX_PEEK_AFTER = 15
+APPENDIX_WRAP_MAX_LINES = 4
+APPENDIX_BODY_CLUSTER_RADIUS = 20
+APPENDIX_LABEL_TITLES = {"", "EK", "EKLER"}
 
 
 def normalize_tr(value):
@@ -168,7 +183,122 @@ def is_coordinate_appendix_body(text):
         and "KOORDINAT" in normalized
     ):
         return True
+    head_lines = []
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        head_lines.append(stripped)
+        if len(head_lines) >= 6:
+            break
+    if head_lines and is_coordinate_appendix_title(" ".join(head_lines)):
+        return True
     return False
+
+
+def is_ekler_heading(line):
+    normalized = normalize_tr(line)
+    if not normalized:
+        return False
+    if normalized in EKLER_HEADING_CANONICAL:
+        return True
+    return any(
+        normalized.startswith(heading + " ")
+        for heading in EKLER_HEADING_CANONICAL
+    )
+
+
+def is_appendix_title_fragment(line):
+    """Partial TOC line that may wrap into a coordinate appendix title."""
+
+    normalized = normalize_tr(line)
+    if not normalized:
+        return False
+    if APPENDIX_EK1_RE.search(normalized):
+        return True
+    if "SECILEN YER" in normalized:
+        return True
+    if "KOORDINAT" in normalized and (
+        "PROJE ICIN" in normalized
+        or APPENDIX_EK1_RE.search(normalized)
+    ):
+        return True
+    if APPENDIX_BARE_ONE_RE.match(normalized) and (
+        "PROJE" in normalized or "SECILEN" in normalized
+    ):
+        return True
+    return False
+
+
+def split_appendix_page_tail(normalized):
+    """Split title / printed page; 'Ek 1' is the label, not page 1."""
+
+    if not normalized:
+        return "", ""
+    page_match = APPENDIX_PAGE_TAIL_RE.match(normalized)
+    if not page_match:
+        return normalized.strip(" .-:"), ""
+    title = page_match.group("title").strip(" .-:")
+    page = page_match.group("page")
+    if page == "1" and title in APPENDIX_LABEL_TITLES:
+        return normalized.strip(" .-:"), ""
+    return title, page
+
+
+def text_layer_has_utm_pairs(text):
+    """True when the text layer already has UTM easting/northing pairs."""
+
+    if not text:
+        return False
+    if UTM_PAIR_RE.search(text):
+        return True
+    easting = len(UTM_EASTING_RE.findall(text))
+    northing = len(UTM_NORTHING_RE.findall(text))
+    return easting >= 2 and northing >= 2
+
+
+def parse_joined_appendix_lines(lines):
+    """Rebuild a wrapped TOC appendix title and optional printed page."""
+
+    raw_parts = []
+    pages_found = []
+    titles = []
+    for line in lines:
+        stripped = str(line or "").strip()
+        if not stripped:
+            continue
+        raw_parts.append(stripped)
+        normalized = normalize_tr(stripped)
+        page_only = PAGE_ONLY_RE.match(normalized)
+        if page_only:
+            pages_found.append(page_only.group("page"))
+            continue
+        title, page = split_appendix_page_tail(normalized)
+        if page:
+            pages_found.append(page)
+        titles.append(title or normalized)
+
+    if not raw_parts:
+        return None
+    raw = " ".join(raw_parts)
+    joined_title = normalize_tr(" ".join(titles))
+    joined_all = normalize_tr(raw)
+    if not (
+        is_coordinate_appendix_title(joined_title)
+        or is_coordinate_appendix_title(joined_all)
+    ):
+        return None
+    use_title = (
+        joined_title
+        if is_coordinate_appendix_title(joined_title)
+        else joined_all
+    )
+    return {
+        "table_no": EK1_APPENDIX_NUMBER,
+        "table_title": use_title,
+        "printed_page_raw": pages_found[-1] if pages_found else "",
+        "raw_text": raw,
+    }
 
 
 def parse_printed_page(page_text):
@@ -278,39 +408,42 @@ def extract_index_entries(page_lines, physical_page):
 
 
 def split_toc_appendix_line(line):
-    normalized = normalize_tr(line)
-    if not normalized:
+    parsed = parse_joined_appendix_lines([line])
+    if parsed is None:
         return None
-
-    page_match = APPENDIX_PAGE_TAIL_RE.match(normalized)
-    if page_match:
-        title = page_match.group("title").strip(" .-:")
-        page = page_match.group("page")
-    else:
-        title = normalized.strip(" .-:")
-        page = ""
-
-    if not is_coordinate_appendix_title(title):
-        return None
-
-    return {
-        "table_no": EK1_APPENDIX_NUMBER,
-        "table_title": title,
-        "printed_page_raw": page,
-        "raw_text": line.strip(),
-    }
+    parsed["raw_text"] = str(line or "").strip()
+    return parsed
 
 
 def extract_toc_appendix_entries(pages_data):
-    """İÇİNDEKİLER lines for the selected-site coordinate appendix.
+    """İÇİNDEKİLER / EKLER lines for the selected-site coordinate appendix.
 
     TOC often starts on one early page and lists EK-1 on the next.
-    Stay in-TOC across the index window until a leave heading.
+    Titles may wrap (``EK-1`` then ``PROJE İÇİN SEÇİLEN YERİN KOORD…``)
+    or omit dotted leaders / page numbers. EKLER after TABLOLAR DİZİNİ
+    still counts. Folder EK-2 (PTD) is not this appendix label.
     """
 
     entries = []
     in_toc = False
-    pending = None
+    pending_lines = []
+    pending_page = None
+
+    def emit_pending():
+        nonlocal pending_lines, pending_page
+        if not pending_lines:
+            return
+        parsed = parse_joined_appendix_lines(pending_lines)
+        if parsed is not None:
+            parsed["physical_index_page"] = pending_page
+            entries.append(parsed)
+        pending_lines = []
+        pending_page = None
+
+    def start_pending(lines, physical_page):
+        nonlocal pending_lines, pending_page
+        pending_lines = list(lines)
+        pending_page = physical_page
 
     for page in pages_data:
         physical_page = page.get("physical_page")
@@ -320,70 +453,102 @@ def extract_toc_appendix_entries(pages_data):
             if not stripped:
                 continue
 
-            if is_toc_heading(stripped):
+            if is_toc_heading(stripped) or is_ekler_heading(stripped):
+                emit_pending()
                 in_toc = True
-                pending = None
-                continue
-
-            if not in_toc:
                 continue
 
             normalized = normalize_tr(stripped)
-            if TOC_LEAVE_RE.match(normalized):
-                if pending is not None:
-                    entries.append(pending)
-                    pending = None
+            if in_toc and TOC_LEAVE_RE.match(normalized):
+                emit_pending()
                 in_toc = False
                 continue
 
-            if pending is not None:
-                page_only = PAGE_ONLY_RE.match(normalized)
-                if page_only:
-                    pending["printed_page_raw"] = page_only.group("page")
-                    pending["raw_text"] = (
-                        pending["raw_text"] + " " + stripped
-                    ).strip()
-                    entries.append(pending)
-                    pending = None
-                    continue
-                entries.append(pending)
-                pending = None
-
-            parsed = split_toc_appendix_line(stripped)
-            if parsed is None:
+            if pending_lines and PAGE_ONLY_RE.match(normalized):
+                pending_lines.append(stripped)
+                emit_pending()
                 continue
 
-            parsed["physical_index_page"] = physical_page
-            if parsed["printed_page_raw"]:
-                entries.append(parsed)
-            else:
-                pending = parsed
+            if pending_lines:
+                parsed_pending = parse_joined_appendix_lines(pending_lines)
+                parsed_extended = parse_joined_appendix_lines(
+                    pending_lines + [stripped]
+                )
+                extends = is_appendix_title_fragment(stripped)
+                if (
+                    parsed_extended is not None
+                    and parsed_pending is None
+                ):
+                    extends = True
+                elif (
+                    parsed_extended is not None
+                    and parsed_pending is not None
+                    and parsed_extended.get("printed_page_raw")
+                    and not parsed_pending.get("printed_page_raw")
+                ):
+                    extends = True
+                if parsed_pending is not None and not extends:
+                    emit_pending()
+                elif extends:
+                    pending_lines.append(stripped)
+                    if len(pending_lines) >= APPENDIX_WRAP_MAX_LINES:
+                        emit_pending()
+                    continue
+                else:
+                    pending_lines = []
+                    pending_page = None
 
-    if pending is not None:
-        entries.append(pending)
+            parsed = split_toc_appendix_line(stripped)
+            if parsed is not None:
+                parsed["physical_index_page"] = physical_page
+                if parsed["printed_page_raw"]:
+                    entries.append(parsed)
+                else:
+                    start_pending([stripped], physical_page)
+                continue
 
+            if is_appendix_title_fragment(stripped):
+                start_pending([stripped], physical_page)
+                continue
+
+    emit_pending()
     return entries
 
 
-def resolve_appendix_entry(entry, pages, skip_pages=None):
+def collect_appendix_body_pages(pages, skip_pages=None):
     skip = set(skip_pages or [])
-    printed_raw, printed_first = parse_printed_page(
-        entry.get("printed_page_raw", "")
-    )
     body_pages = []
-
     for page in pages:
         physical_page = page["physical_page"]
         if physical_page in skip:
             continue
         if is_coordinate_appendix_body(page.get("text") or ""):
             body_pages.append(physical_page)
+    return body_pages
+
+
+def cluster_appendix_body_pages(chosen, body_pages):
+    if chosen is None:
+        return list(body_pages or [])
+    return [
+        page
+        for page in (body_pages or [])
+        if abs(page - chosen) <= APPENDIX_BODY_CLUSTER_RADIUS
+    ]
+
+
+def resolve_appendix_entry(entry, pages, skip_pages=None):
+    printed_raw, printed_first = parse_printed_page(
+        entry.get("printed_page_raw", "")
+    )
+    body_pages = collect_appendix_body_pages(pages, skip_pages)
 
     physical_page = None
     resolve_kind = "UNRESOLVED"
     if body_pages:
         if printed_first is None:
-            physical_page = body_pages[0]
+            # Prefer the late appendix over an early "Ek-1'de" pointer.
+            physical_page = body_pages[-1]
         else:
             physical_page = min(
                 body_pages,
@@ -398,6 +563,7 @@ def resolve_appendix_entry(entry, pages, skip_pages=None):
     if physical_page is not None and printed_first is not None:
         page_offset = physical_page - printed_first
 
+    cluster = cluster_appendix_body_pages(physical_page, body_pages)
     return {
         **entry,
         "printed_page": printed_raw,
@@ -405,6 +571,7 @@ def resolve_appendix_entry(entry, pages, skip_pages=None):
         "physical_page": physical_page,
         "page_offset": page_offset,
         "resolve_kind": resolve_kind,
+        "body_pages": cluster,
     }
 
 
@@ -550,6 +717,28 @@ def expand_pages(
     return sorted(expanded)
 
 
+def appendix_pages_from_plan(plan):
+    """Expanded physical pages that belong to the coordinate appendix."""
+
+    page_count = int((plan or {}).get("page_count") or 0)
+    pages = []
+    for entry in (plan or {}).get("appendix_entries") or []:
+        physical_page = entry.get("physical_page")
+        if isinstance(physical_page, int):
+            pages.append(physical_page)
+        pages.extend(
+            page_number
+            for page_number in (entry.get("body_pages") or [])
+            if isinstance(page_number, int)
+        )
+    return expand_pages(
+        pages,
+        page_count,
+        before=APPENDIX_CONTINUATION_BEFORE,
+        after=APPENDIX_CONTINUATION_AFTER,
+    )
+
+
 def planned_read_pages(page_count, max_pages, target_pages):
     """First max_pages plus index/appendix targets, including pages > 150."""
 
@@ -673,6 +862,27 @@ class TableIndexLocator:
                 offsets.sort()
                 median_offset = offsets[len(offsets) // 2]
 
+            needs_appendix_body_scan = bool(appendix_entries) and (
+                any(
+                    not str(entry.get("printed_page_raw") or "").strip()
+                    for entry in appendix_entries
+                )
+            )
+            if appendix_entries and not body_pages and (
+                needs_appendix_body_scan or geometry_entries
+            ):
+                for index in range(page_count):
+                    try:
+                        text = document[index].get_text("text") or ""
+                    except Exception:
+                        text = ""
+                    body_pages.append(
+                        {
+                            "physical_page": index + 1,
+                            "text": text,
+                        }
+                    )
+
             resolved_appendix = []
             if appendix_entries and body_pages:
                 resolved_appendix = [
@@ -701,6 +911,11 @@ class TableIndexLocator:
                     clone["printed_page"] = printed_raw
                     clone["printed_page_first"] = printed_first
                     clone["physical_page"] = physical_page
+                    clone["body_pages"] = (
+                        [physical_page]
+                        if physical_page is not None
+                        else []
+                    )
                     if (
                         physical_page is not None
                         and printed_first is not None
@@ -725,11 +940,11 @@ class TableIndexLocator:
             for entry in resolved
             if entry.get("physical_page") is not None
         ]
-        appendix_pages = [
-            entry["physical_page"]
-            for entry in resolved_appendix
-            if entry.get("physical_page") is not None
-        ]
+        appendix_pages = []
+        for entry in resolved_appendix:
+            if entry.get("physical_page") is not None:
+                appendix_pages.append(entry["physical_page"])
+            appendix_pages.extend(entry.get("body_pages") or [])
         target_pages = sorted(
             set(expand_pages(physical_pages, page_count))
             | set(

@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.crs_resolver import CRSResolver
@@ -54,6 +55,11 @@ from src.coordinate.table_index import (
     is_coordinate_appendix_title,
     parse_printed_page,
     planned_read_pages,
+    resolve_appendix_entry,
+    text_layer_has_utm_pairs,
+)
+from src.core.pdf_text_extraction_service import (
+    PDFTextExtractionService,
 )
 from src.export.kml_exporter import KMLExporter
 from src.project.project_info_extractor import ProjectInfoExtractor
@@ -224,7 +230,7 @@ def export_and_scan_kml(pairs):
 
 
 class LayoutCapabilityMapTests(unittest.TestCase):
-    def test_eight_difference_classes_are_registered(self):
+    def test_nine_difference_classes_are_registered(self):
         self.assertEqual(
             LAYOUT_CLASS_IDS,
             (
@@ -236,6 +242,7 @@ class LayoutCapabilityMapTests(unittest.TestCase):
                 "grouping_typing",
                 "metadata_kml_naming",
                 "coordinate_appendix_index",
+                "scanned_coordinate_appendix",
             ),
         )
         for item in LAYOUT_CLASSES:
@@ -290,6 +297,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "appendix_pages_beyond_fast_scan",
             layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "toc_ek1_unnumbered_or_wrapped",
+            layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "ocr_when_appendix_lacks_utm_pairs",
+            layout_class("scanned_coordinate_appendix")["capabilities"],
         )
 
     def test_extract_coordinates_still_returns_a_list(self):
@@ -1830,6 +1845,7 @@ class CoordinateAppendixIndexClassTests(unittest.TestCase):
         for title in (
             "EK-1 PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
             "Ek 1- Proje için seçilen yerin koordinatları",
+            "Ek 1 Proje için seçilen yerin koordinatları",
             "1- Proje için seçilen yerin koordinatları",
         ):
             self.assertTrue(
@@ -1885,6 +1901,277 @@ class CoordinateAppendixIndexClassTests(unittest.TestCase):
         self.assertNotIn(151, read)
         self.assertIn(165, read)
         self.assertIn(175, read)
+
+    def test_unnumbered_and_wrapped_toc_resolve_late_body(self):
+        """Adana-style PTD: TOC title without leaders, or EK-1 wrap."""
+
+        unnumbered = [
+            {
+                "physical_page": 6,
+                "text": "\n".join(
+                    (
+                        "İÇİNDEKİLER",
+                        "1. GİRİŞ ................................ 1",
+                        "Ek 1 Proje için seçilen yerin koordinatları",
+                    )
+                ),
+            },
+        ]
+        entries = extract_toc_appendix_entries(unnumbered)
+        self.assertEqual(len(entries), 1)
+        self.assertFalse(entries[0]["printed_page_raw"])
+
+        wrapped = [
+            {
+                "physical_page": 6,
+                "text": "İÇİNDEKİLER\n1. GİRİŞ ......... 1\n",
+            },
+            {
+                "physical_page": 7,
+                "text": "EK-1\nPROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI\n",
+            },
+        ]
+        wrapped_entries = extract_toc_appendix_entries(wrapped)
+        self.assertEqual(len(wrapped_entries), 1)
+        self.assertTrue(
+            is_coordinate_appendix_title(
+                wrapped_entries[0]["table_title"]
+            )
+        )
+
+        ekler_after_tables = [
+            {
+                "physical_page": 6,
+                "text": "\n".join(
+                    (
+                        "İÇİNDEKİLER",
+                        "1. GİRİŞ ................................ 1",
+                        "Tablolar Dizini",
+                        "Tablo 1. Flora .................... 20",
+                        "EKLER",
+                        "Ek 1 Proje için seçilen yerin koordinatları",
+                    )
+                ),
+            },
+        ]
+        ekler_entries = extract_toc_appendix_entries(ekler_after_tables)
+        self.assertEqual(len(ekler_entries), 1)
+
+        resolved = resolve_appendix_entry(
+            entries[0],
+            [
+                {
+                    "physical_page": 20,
+                    "text": (
+                        "Proje alanı koordinatları Ek-1'de "
+                        "verilmektedir."
+                    ),
+                },
+                {
+                    "physical_page": 160,
+                    "text": (
+                        "EK-1\n"
+                        "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI\n"
+                        "N1 434529 4205189"
+                    ),
+                },
+            ],
+            skip_pages=[6],
+        )
+        self.assertEqual(resolved["physical_page"], 160)
+        self.assertIn(160, resolved["body_pages"])
+        read = planned_read_pages(220, 150, [160, 170, 179])
+        self.assertIn(160, read)
+        self.assertIn(170, read)
+        self.assertIn(179, read)
+        self.assertNotIn(151, read)
+
+
+class ScannedCoordinateAppendixClassTests(unittest.TestCase):
+    def test_text_layer_without_utm_pairs_is_not_a_ring(self):
+        self.assertFalse(
+            text_layer_has_utm_pairs(
+                "EK-1 PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI"
+            )
+        )
+        self.assertFalse(
+            text_layer_has_utm_pairs(
+                "Tablo 9 Hava Kalitesi X/Y Ölçüm\n12.4 15.2\n8.1 9.7"
+            )
+        )
+        self.assertTrue(
+            text_layer_has_utm_pairs(
+                "258340.47 4229149.69 38.176310 36.240938"
+            )
+        )
+
+    def test_index_guided_ocrs_image_appendix_not_dust_table(self):
+        """Title in text, coords only via OCR — not Tablo 9 X/Y."""
+
+        appendix_title = (
+            "--- Sayfa 42 [PDF METİN KATMANI] ---\n"
+            "EK-1\n"
+            "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI\n"
+            "Şekil 1. Proje alanı haritası ve açıklama metni. "
+            "Bu sayfada metin katmanı başlığı taşır ancak "
+            "koordinat halkası görüntü olarak durur.\n"
+        )
+        false_table = (
+            "--- Sayfa 20 [PDF METİN KATMANI] ---\n"
+            "Tablo 9. Hava Kalitesi X/Y Ölçüm Noktaları\n"
+            "N1 12.40 15.20\n"
+            "N2 8.10 9.70\n"
+        )
+        ocr_ring = "\n".join(
+            (
+                "--- Sayfa 42 [OCR] ---",
+                "Tablo 1. Proje Alanı Koordinatları",
+                *CRS,
+                *stacked_utm_lines(
+                    ("P1", "P2", "P3", "P4"),
+                    square_utm(258340, 4229149, 100),
+                ),
+            )
+        )
+        index_text = {
+            "success": True,
+            "method": "PDF Metin Katmanı",
+            "text": false_table + appendix_title,
+            "page_count": 136,
+            "scanned_pages": 5,
+            "text_layer_pages": 2,
+            "ocr_pages": 0,
+            "failed_pages": 0,
+            "extracted_page_numbers": [20, 42],
+            "requested_page_numbers": [20, 42],
+        }
+        ocr_calls = []
+
+        def extract_selected(_pdf_path, pages):
+            ocr_calls.append(list(pages))
+            return {
+                "success": True,
+                "text": ocr_ring,
+                "failed_pages": 0,
+            }
+
+        with (
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "TableIndexLocator.plan",
+                return_value={
+                    "index_found": True,
+                    "index_pages": [6],
+                    "geometry_entries": [],
+                    "appendix_entries": [
+                        {
+                            "table_no": "EK-1",
+                            "physical_page": 42,
+                            "body_pages": [42],
+                            "printed_page_raw": "",
+                        }
+                    ],
+                    "target_pages": [20, 42],
+                    "page_count": 136,
+                },
+            ),
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text_layer_pages",
+                return_value=index_text,
+            ),
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_selected_pages",
+                side_effect=extract_selected,
+            ) as extract_selected_pages,
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text_layer",
+            ) as extract_text_layer,
+        ):
+            result = PDFTextExtractionService.extract(
+                "sample.pdf",
+                defer_heavy_fallback_if_useful=True,
+            )
+
+        extract_text_layer.assert_not_called()
+        extract_selected_pages.assert_called()
+        self.assertTrue(ocr_calls)
+        self.assertIn(42, ocr_calls[0])
+        self.assertGreaterEqual(
+            result.get("ocr_pages", 0),
+            1,
+        )
+        self.assertIn("[OCR]", result["text"])
+        quality = PDFTextExtractionService._measure_text_quality(
+            result["text"]
+        )
+        self.assertGreaterEqual(quality["polygon_count"], 1)
+        self.assertTrue(result.get("has_useful_result"))
+
+    def test_text_layer_utm_appendix_does_not_force_ocr(self):
+        ring_text = "\n".join(
+            (
+                "--- Sayfa 160 [PDF METİN KATMANI] ---",
+                "EK-1 PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+                "Tablo 1. Proje Alanı Koordinatları",
+                *CRS,
+                *stacked_utm_lines(
+                    ("P1", "P2", "P3", "P4"),
+                    square_utm(),
+                ),
+            )
+        )
+        index_text = {
+            "success": True,
+            "method": "PDF Metin Katmanı",
+            "text": ring_text,
+            "page_count": 180,
+            "scanned_pages": 12,
+            "text_layer_pages": 1,
+            "ocr_pages": 0,
+            "failed_pages": 0,
+            "extracted_page_numbers": [160],
+            "requested_page_numbers": [160],
+        }
+        with (
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "TableIndexLocator.plan",
+                return_value={
+                    "index_found": True,
+                    "index_pages": [6],
+                    "geometry_entries": [],
+                    "appendix_entries": [
+                        {
+                            "table_no": "EK-1",
+                            "physical_page": 160,
+                            "body_pages": [160],
+                        }
+                    ],
+                    "target_pages": [160],
+                    "page_count": 180,
+                },
+            ),
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_text_layer_pages",
+                return_value=index_text,
+            ),
+            patch(
+                "src.core.pdf_text_extraction_service."
+                "OCREngine.extract_selected_pages",
+            ) as extract_selected,
+        ):
+            result = PDFTextExtractionService.extract(
+                "sample.pdf",
+                defer_heavy_fallback_if_useful=True,
+            )
+
+        extract_selected.assert_not_called()
+        self.assertTrue(result.get("has_useful_result"))
+        self.assertEqual(result.get("ocr_pages", 0), 0)
 
 
 if __name__ == "__main__":

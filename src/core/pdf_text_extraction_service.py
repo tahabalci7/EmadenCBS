@@ -3,7 +3,11 @@ import re
 from src.coordinate.coordinate_engine import CoordinateEngine
 from src.coordinate.polygon_builder import PolygonBuilder
 from src.coordinate.table_detector import TableDetector
-from src.coordinate.table_index import TableIndexLocator
+from src.coordinate.table_index import (
+    TableIndexLocator,
+    appendix_pages_from_plan,
+    text_layer_has_utm_pairs,
+)
 from src.ocr.ocr_engine import OCREngine
 
 
@@ -352,6 +356,7 @@ class PDFTextExtractionService:
             or target_pages
         )
         page_chars = cls._page_char_counts(combined_text)
+        page_texts = cls._page_texts(combined_text)
         thin_pages = {
             page_number
             for page_number in requested
@@ -366,11 +371,35 @@ class PDFTextExtractionService:
             )
         thin_pages = sorted(thin_pages)
 
+        appendix_pages = appendix_pages_from_plan(plan)
+        appendix_need_ocr = []
+        preview_quality = cls._measure_text_quality(combined_text)
+        if (
+            appendix_pages
+            and not preview_quality["has_required_polygons"]
+        ):
+            appendix_text = "\n".join(
+                page_texts.get(page_number, "")
+                for page_number in appendix_pages
+            )
+            if not text_layer_has_utm_pairs(appendix_text):
+                appendix_need_ocr = [
+                    page_number
+                    for page_number in appendix_pages
+                    if page_number in requested
+                    or page_number in extracted
+                    or page_number in thin_pages
+                ]
+                if not appendix_need_ocr:
+                    appendix_need_ocr = list(appendix_pages)
+
+        ocr_targets = sorted(set(thin_pages) | set(appendix_need_ocr))
+
         ocr_pages = []
-        if thin_pages:
+        if ocr_targets:
             ocr_result = OCREngine.extract_selected_pages(
                 pdf_path,
-                thin_pages,
+                ocr_targets,
             )
             ocr_text = ocr_result.get("text", "") or ""
             if ocr_text.strip():
@@ -379,7 +408,7 @@ class PDFTextExtractionService:
                     + "\n"
                     + ocr_text
                 )
-                ocr_pages = thin_pages
+                ocr_pages = ocr_targets
 
         quality = cls._measure_text_quality(combined_text)
         decorated = cls._decorate_result(
@@ -404,9 +433,15 @@ class PDFTextExtractionService:
             full_document_ocr=False,
             index_target_pages=target_pages,
             index_found=bool(plan.get("index_found")),
+            appendix_ocr=bool(appendix_need_ocr),
         )
 
         if quality["has_required_polygons"]:
+            return cls._finalize_without_fallback(
+                decorated
+            )
+
+        if quality["has_useful_result"] and appendix_need_ocr:
             return cls._finalize_without_fallback(
                 decorated
             )
@@ -423,9 +458,9 @@ class PDFTextExtractionService:
         return None
 
     @classmethod
-    def _page_char_counts(cls, text):
+    def _page_texts(cls, text):
         matches = list(cls.PAGE_PATTERN.finditer(text))
-        counts = {}
+        pages = {}
         for index, match in enumerate(matches):
             page_number = int(match.group(1))
             start = match.end()
@@ -434,8 +469,15 @@ class PDFTextExtractionService:
                 if index + 1 < len(matches)
                 else len(text)
             )
-            counts[page_number] = len(text[start:end].strip())
-        return counts
+            pages[page_number] = text[start:end]
+        return pages
+
+    @classmethod
+    def _page_char_counts(cls, text):
+        return {
+            page_number: len(page_text.strip())
+            for page_number, page_text in cls._page_texts(text).items()
+        }
 
     @classmethod
     def _has_required_polygons(cls, text):

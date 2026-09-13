@@ -1,18 +1,26 @@
 import unittest
 
+import tempfile
+from pathlib import Path
+
+import fitz
+
 from src.coordinate.table_index import (
+    TableIndexLocator,
     apply_printed_page_offset,
     expand_pages,
     extract_index_entries,
     extract_toc_appendix_entries,
     is_coordinate_appendix_title,
     is_geometry_title,
+    parse_joined_appendix_lines,
     planned_read_pages,
     resolve_appendix_entry,
     resolve_entry,
     split_entry,
     split_toc_appendix_line,
     table_no_variants,
+    text_layer_has_utm_pairs,
 )
 
 
@@ -169,6 +177,99 @@ class TableIndexTests(unittest.TestCase):
         self.assertNotIn(151, read)
         self.assertIn(165, read)
         self.assertIn(175, read)
+
+    def test_unnumbered_and_wrapped_toc_titles(self):
+        self.assertIsNotNone(
+            split_toc_appendix_line(
+                "Ek 1 Proje için seçilen yerin koordinatları"
+            )
+        )
+        self.assertFalse(
+            split_toc_appendix_line(
+                "Ek 1 Proje için seçilen yerin koordinatları"
+            )["printed_page_raw"]
+        )
+        wrapped = parse_joined_appendix_lines(
+            [
+                "EK-1",
+                "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+            ]
+        )
+        self.assertIsNotNone(wrapped)
+        self.assertTrue(
+            is_coordinate_appendix_title(wrapped["table_title"])
+        )
+        self.assertFalse(
+            text_layer_has_utm_pairs(
+                "Ek 1 Proje için seçilen yerin koordinatları"
+            )
+        )
+
+        pages = [
+            {
+                "physical_page": 7,
+                "text": (
+                    "İÇİNDEKİLER\n"
+                    "EK-1\n"
+                    "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI\n"
+                ),
+            },
+        ]
+        entries = extract_toc_appendix_entries(pages)
+        self.assertEqual(len(entries), 1)
+
+    def _write_pdf(self, path, page_texts):
+        document = fitz.open()
+        for text in page_texts:
+            page = document.new_page()
+            y_position = 72
+            for line in str(text).splitlines() or [""]:
+                page.insert_text((72, y_position), line)
+                y_position += 14
+        document.save(path)
+        document.close()
+
+    def test_plan_unnumbered_toc_includes_late_body_under_max_pages(self):
+        pages = [""] * 180
+        pages[5] = "ICINDEKILER\n1. GIRIS ......... 1"
+        pages[6] = "Ek 1 Proje icin secilen yerin koordinatlari"
+        pages[159] = (
+            "EK-1\n"
+            "PROJE ICIN SECILEN YERIN KOORDINATLARI\n"
+            "N1 434529 4205189"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            pdf_path = Path(folder) / "late-appendix.pdf"
+            self._write_pdf(pdf_path, pages)
+            plan = TableIndexLocator.plan(str(pdf_path))
+
+        self.assertTrue(plan["appendix_entries"])
+        self.assertIn(160, plan["target_pages"])
+        read = planned_read_pages(
+            plan["page_count"],
+            150,
+            plan["target_pages"],
+        )
+        self.assertIn(160, read)
+        self.assertNotIn(151, read)
+
+    def test_plan_wrapped_toc_includes_late_body(self):
+        pages = [""] * 185
+        pages[5] = "ICINDEKILER\n1. GIRIS ......... 1"
+        pages[6] = "EK-1"
+        pages[7] = "PROJE ICIN SECILEN YERIN KOORDINATLARI"
+        pages[167] = (
+            "EK-1\n"
+            "PROJE ICIN SECILEN YERIN KOORDINATLARI\n"
+            "P1 434529 4205189"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            pdf_path = Path(folder) / "wrapped-appendix.pdf"
+            self._write_pdf(pdf_path, pages)
+            plan = TableIndexLocator.plan(str(pdf_path))
+
+        self.assertTrue(plan["appendix_entries"])
+        self.assertIn(168, plan["target_pages"])
 
 
 if __name__ == "__main__":
