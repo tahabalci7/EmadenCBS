@@ -247,6 +247,7 @@ LAYOUT_CLASSES = (
             "compare_declared_vs_computed",
             "skip_mismatch_on_export",
             "hold_export_for_review",
+            "merged_multiced_ring_fails_qa",
         ),
         "contract": (
             "When a table/header associates an area type with a "
@@ -261,7 +262,13 @@ LAYOUT_CLASSES = (
             "computed_ha, ratio), the ring is skipped from KML, "
             "and KML_HELD_FOR_REVIEW is set. Silent wrong "
             "geometry is worse than skip. POINT / Galeri pins "
-            "are not compared. No declared area is a no-op."
+            "are not compared. No declared area is a no-op. "
+            "Several numbered ÇED tables (ÇED Alanı-1..n, each "
+            "with its own declared ha and a few corners) stay "
+            "separate rings beside a ruhsat-scale ring; merging "
+            "those vertices into one huge ÇED (declared ~18 ha, "
+            "computed hundreds/thousands of ha) is held, not "
+            "exported."
         ),
     },
 )
