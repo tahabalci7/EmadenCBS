@@ -70,6 +70,18 @@ class PolygonBuilder:
                         "polygon_heading",
                         "",
                     ),
+                    "declared_ha": item.get(
+                        "declared_ha"
+                    ),
+                    "declared_set_ha": item.get(
+                        "declared_set_ha"
+                    ),
+                    "declared_area_scope": item.get(
+                        "declared_area_scope"
+                    ),
+                    "expected_ring_count": item.get(
+                        "expected_ring_count"
+                    ),
                     "datum": item.get(
                         "datum",
                         "Bilinmiyor",

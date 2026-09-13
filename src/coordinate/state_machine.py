@@ -12,6 +12,11 @@ NUMERIC_LABEL_PATTERN = re.compile(
     r"^\d+$"
 )
 
+# Tablo 3-class vertex ids: ring/vertex, e.g. 1/7 then 2/1.
+SLASH_RING_LABEL_PATTERN = re.compile(
+    r"^(\d+)\s*/\s*(\d+)$"
+)
+
 COMBINED_NUMBER_PATTERN = (
     r"(?<![A-Za-zÇĞİÖŞÜçğıöşü])"
     r"([+-]?(?:"
@@ -153,6 +158,9 @@ def is_label(
 
     if not value:
         return False
+
+    if SLASH_RING_LABEL_PATTERN.fullmatch(value):
+        return True
 
     if (
         allow_numeric_labels
@@ -1791,6 +1799,13 @@ def normalize_ocr_label(label: str) -> str:
     # Fazla boşlukları temizle.
     label = re.sub(r"\s+", " ", label)
 
+    # "1 / 7" and "1/ 7" are one ring/vertex label.
+    label = re.sub(
+        r"(\d+)\s*/\s*(\d+)",
+        r"\1/\2",
+        label,
+    )
+
     # Ayraçlardan sonra/önce OCR'ın I/İ okuduğu sıra numarasını düzelt.
     label = re.sub(
         r"(?<=[\-_])(?:I|İ)(?=$|[\-_])",
@@ -1937,16 +1952,51 @@ _LABEL_SERIES_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
+        r"^([A-ZÇĞİÖŞÜ]+\d*)[_-](\d+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"^(\d+)$",
     ),
 )
 
+_TOTAL_AREA_HA_PATTERN = re.compile(
+    r"toplam(?:\s+alan[ıi]?)?\s*:?\s*"
+    r"([\d.\s]+(?:,\d+)?)\s*ha\b",
+    re.IGNORECASE,
+)
+_DECLARED_HA_PATTERN = re.compile(
+    r"([\d.\s]+(?:,\d+)?)\s*ha\b",
+    re.IGNORECASE,
+)
+
+
+def _fold_label_series_text(label):
+    return (
+        str(label or "")
+        .strip()
+        .upper()
+        .replace("İ", "I")
+        .replace("Ş", "S")
+        .replace("Ğ", "G")
+        .replace("Ü", "U")
+        .replace("Ö", "O")
+        .replace("Ç", "C")
+    )
+
 
 def _parse_point_label_series(label):
-    text = str(label or "").strip()
+    text = _fold_label_series_text(label)
 
     if not text:
         return None
+
+    slash = SLASH_RING_LABEL_PATTERN.fullmatch(text)
+    if slash:
+        return (
+            slash.group(1),
+            int(slash.group(2)),
+        )
 
     for pattern in _LABEL_SERIES_PATTERNS:
         match = pattern.fullmatch(text)
@@ -1966,6 +2016,285 @@ def _parse_point_label_series(label):
         )
 
     return None
+
+
+def infer_labeled_ring_keys(points):
+    """Align each point with a ring key inferred from vertex labels.
+
+    Breaks a single table into parts when labels show:
+    - slash ring/vertex ids (``1/7`` then ``2/1``)
+    - a label-series stem change (``T1_1`` then ``CED-1``)
+    - a bare Sıra No series (``1..n``) that restarts after ≥3 vertices.
+      Letter prefixes such as ``R1`` may repeat on a continuation page
+      and are not treated as a new ring.
+    """
+
+    keys = []
+    last_stem = None
+    last_number = None
+    stem_count = 0
+    restart_serial = 1
+    current_key = None
+
+    for index, point in enumerate(points or []):
+        label = str(
+            point.get("label")
+            or point.get("name")
+            or ""
+        ).strip()
+        series = _parse_point_label_series(label)
+        if series is None:
+            keys.append(current_key)
+            continue
+
+        stem, number = series
+        is_slash = bool(
+            SLASH_RING_LABEL_PATTERN.fullmatch(
+                _fold_label_series_text(label)
+            )
+        )
+
+        if last_stem is None:
+            current_key = f"{stem or 'N'}:{restart_serial}"
+            last_stem = stem
+            last_number = number
+            stem_count = 1
+            keys.append(current_key)
+            continue
+
+        if stem != last_stem:
+            restart_serial += 1
+            current_key = f"{stem or 'N'}:{restart_serial}"
+            last_stem = stem
+            last_number = number
+            stem_count = 1
+            keys.append(current_key)
+            continue
+
+        if (
+            not is_slash
+            and stem == ""
+            and number <= last_number
+            and stem_count >= 3
+            and _looks_like_new_ring_start(
+                points,
+                index,
+                stem,
+                number,
+            )
+        ):
+            restart_serial += 1
+            current_key = f"{stem or 'N'}:{restart_serial}"
+            last_stem = stem
+            last_number = number
+            stem_count = 1
+            keys.append(current_key)
+            continue
+
+        last_number = number
+        stem_count += 1
+        keys.append(current_key)
+
+    return keys
+
+
+def _looks_like_new_ring_start(points, index, stem, first_number):
+    """True when this decreasing index begins another 3+ vertex ring.
+
+    A repeated first vertex that only closes the current ring does not
+    count: following same-stem numbers must continue upward long enough.
+    """
+
+    following = []
+    last = first_number
+
+    for point in points[index + 1:]:
+        series = _parse_point_label_series(
+            point.get("label") or point.get("name")
+        )
+        if series is None:
+            continue
+
+        next_stem, next_number = series
+        if next_stem != stem:
+            break
+        if next_number <= last:
+            break
+
+        following.append(next_number)
+        last = next_number
+        if 1 + len(following) >= 3:
+            return True
+
+    return 1 + len(following) >= 3
+
+
+def labeled_multipart_ring_count(points):
+    """How many labeled parts with at least 3 vertices the labels show."""
+
+    counts = {}
+    for key in infer_labeled_ring_keys(points):
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+
+    return sum(1 for count in counts.values() if count >= 3)
+
+
+def assign_multipart_ring_groups(points):
+    """Split DEFAULT/shared-heading runs into one polygon_group per ring."""
+
+    if not points or len(points) < 6:
+        return points
+
+    start = 0
+    while start < len(points):
+        area = points[start].get("table_type_override")
+        group = points[start].get("polygon_group", "DEFAULT")
+        end = start + 1
+        while end < len(points):
+            if points[end].get("table_type_override") != area:
+                break
+            if points[end].get("polygon_group", "DEFAULT") != group:
+                break
+            end += 1
+        _assign_rings_in_run(points[start:end])
+        start = end
+
+    return points
+
+
+def _assign_rings_in_run(run):
+    if len(run) < 6:
+        return
+
+    keys = infer_labeled_ring_keys(run)
+    counts = {}
+    for key in keys:
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+
+    distinct = []
+    seen = set()
+    for key in keys:
+        if key and counts.get(key, 0) >= 3 and key not in seen:
+            seen.add(key)
+            distinct.append(key)
+
+    if len(distinct) < 2:
+        return
+
+    stems = [key.split(":", 1)[0] for key in distinct]
+    if all(stem.isdigit() for stem in stems) and len(set(stems)) == len(
+        stems
+    ):
+        mapping = {
+            key: f"RING_{stem}"
+            for key, stem in zip(distinct, stems)
+        }
+    else:
+        mapping = {
+            key: f"RING_{index}"
+            for index, key in enumerate(distinct, start=1)
+        }
+
+    expected = len(distinct)
+    for point, key in zip(run, keys):
+        if key not in mapping:
+            continue
+        point["polygon_group"] = mapping[key]
+        if not point.get("polygon_heading"):
+            point["polygon_heading"] = mapping[key]
+        point["expected_ring_count"] = expected
+
+
+def parse_declared_set_ha(text):
+    """Return a TOPLAM ALAN hectare figure, or None."""
+
+    for match in _TOTAL_AREA_HA_PATTERN.finditer(str(text or "")):
+        try:
+            value = parse_localized_number(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if value and value > 0:
+            return value
+    return None
+
+
+def parse_non_total_declared_ha(text):
+    """Hectare figures that are not a TOPLAM ALAN line."""
+
+    found = []
+    seen = set()
+    for line in str(text or "").splitlines():
+        if _TOTAL_AREA_HA_PATTERN.search(line):
+            continue
+        match = _DECLARED_HA_PATTERN.search(line)
+        if match is None:
+            continue
+        try:
+            value = parse_localized_number(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if not value or value <= 0:
+            continue
+        key = round(value, 4)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(value)
+    return found
+
+
+def attach_multipart_declared_areas(points, text):
+    """Attach a set total, or per-ring ha when each part declares one.
+
+    A lone TOPLAM / title total is not copied onto each ring as
+    ``declared_ha`` (that would make area QA compare a part to the
+    whole). It is stored as ``declared_set_ha``.
+    """
+
+    if not points:
+        return points
+
+    groups = []
+    seen = set()
+    for point in points:
+        group = point.get("polygon_group", "DEFAULT")
+        if not str(group).startswith("RING_") or group in seen:
+            continue
+        seen.add(group)
+        groups.append(group)
+
+    if len(groups) < 2:
+        return points
+
+    per_ring = parse_non_total_declared_ha(text)
+    if len(per_ring) == len(groups):
+        by_group = dict(zip(groups, per_ring))
+        for point in points:
+            group = point.get("polygon_group")
+            if group in by_group:
+                point["declared_ha"] = by_group[group]
+                point["declared_area_scope"] = "ring"
+
+    set_ha = parse_declared_set_ha(text)
+    if set_ha is None and len(per_ring) == 1:
+        set_ha = per_ring[0]
+    elif set_ha is None and len(per_ring) == len(groups):
+        set_ha = sum(per_ring)
+
+    if set_ha is None:
+        return points
+
+    for point in points:
+        if not str(point.get("polygon_group", "")).startswith("RING_"):
+            continue
+        point["declared_set_ha"] = set_ha
+        if point.get("declared_ha") in (None, ""):
+            point["declared_area_scope"] = "multipart_total"
+
+    return points
 
 
 def trailing_foreign_ring_start(points):
@@ -2977,6 +3306,8 @@ def parse_coordinate_blocks(
             seen.add(key)
             results.append(point)
 
+    assign_multipart_ring_groups(results)
+    attach_multipart_declared_areas(results, text)
     return results
 def detect_area_type(line):
         raw = str(line)

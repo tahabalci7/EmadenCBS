@@ -35,6 +35,7 @@ coordinates, polygons, and reason codes together.
 | Grouping / typing | `table_classifier`, `state_machine`, `polygon_builder` | NOLU POLİGON / ÇED / ruhsat. **NOLU NOKTA / KÖŞE are vertex labels, not polygon headings** (otherwise diagnose points become poly=0). `<3` verts reported. RUHSAT not erased when geometry matches ÇED. Auxiliary (STOK) must not inherit a ÇED-scale ring from a misattached table. Tesisi/ünite/stok captions keep that noun when `(Talep Edilen ÇED Alanı)` is only parenthetical. A leftover geographic ring after `Malzeme Stok Alanı` is ÇED, not STOK. A 500 m lattice composited with real tesisi verts, or UTM pairs absent from the table text, is not exported as STOK — including lon/lat-only rings and L-shaped / partial 500 m meshes that are not a filled cartesian product. **Galeri pins:** `GALERI_ALANI` with `<3` verts or a closed hull `> 5000 m²` is `geometry_type=POINT` (KML pins). That covers `Galeri Giriş Koordinatları` without a filename rule. Compact Galeri Alanı rings under the threshold stay polygons. `Sicil Nolu Alan` / `Ruhsatlı Alan` type as RUHSAT even when the caption also names ÇED. EK-1 appendix “PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI”: the Sicil Nolu Alan colon dual-CRS block is the ruhsat ring. |
 | Metadata / KML naming | `project_info_extractor`, `kml_exporter` | Restore `{İL}/{Ek-1\|Ek-2}/{sicil} - {firma} - {maden_cinsi}.kml`. PR #2 (`33cc525`) inverted the stem to company-then-sicil and kept flat GUI writes. Ek-1 / Ek-2 stay in the folder. Missing il/Ek/sicil/firma/maden cinsi stay visible. Unreadable sicil is not invented: `license_no_missing` means Destekci must ask the user before overwrite export. |
 | EK-1 selected-site coordinate appendix | `table_index` | İÇİNDEKİLER / TOC lines such as `EK-1 PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI`, `Ek 1- …`, or `1- Proje için seçilen yerin koordinatları` add those body pages to `target_pages` even when they are **beyond max_pages=150**. Folder `EK-2` (PTD) is not this appendix label. |
+| Multi-part ruhsat / ÇED rings | `state_machine`, `polygon_builder`, `pipeline_contract`, `kml_exporter` | `1/n` then `2/n` (or a Sıra No restart / labeled stem change such as T1_* then ÇED-*) in one table emit **one polygon per ring**. A lone TOPLAM ALAN attaches to the set (`declared_set_ha`), not each part. `RING_COUNT_MISMATCH` when labels show N parts but fewer polygons were built — do not treat a one-ring merge as OK only because its area is near the total. Multipart ruhsat still counts as ruhsat present. |
 
 ## Reason codes
 
@@ -48,6 +49,7 @@ Stable identifiers for GUI and batch (`pipeline_reason_codes`):
 - `CRS_UNRESOLVED_NO_TRANSFORM`
 - `KML_NO_WGS84`
 - `KML_RING_STILL_CROSSED`
+- `RING_COUNT_MISMATCH`
 
 ## Destekci standing QA
 
