@@ -2232,6 +2232,20 @@ def parse_coordinate_blocks(
                     line.strip(),
                 )
 
+        numbered_ced = re.search(
+            r"(?:YENI\s+|MEVCUT\s+|TALEP EDILEN\s+)?"
+            r"CED(?:\s+(?:ALANI|ALAN|POLIGONU|POLIGON|SAHASI|SAHA))?"
+            r"\s*[-.:]?\s*(\d+)"
+            r"(?!\s*[,.]?\d*\s*(?:HA|HEKTAR|M2|M)\b)",
+            normalized,
+        )
+        if numbered_ced:
+            number = numbered_ced.group(1)
+            return (
+                f"POLIGON_{number}",
+                line.strip(),
+            )
+
         return None
 
     def detect_generic_area_heading(line):

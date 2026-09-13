@@ -19,6 +19,8 @@ CRS_INHERITED = "CRS_INHERITED"
 CRS_UNRESOLVED_NO_TRANSFORM = "CRS_UNRESOLVED_NO_TRANSFORM"
 KML_NO_WGS84 = "KML_NO_WGS84"
 KML_RING_STILL_CROSSED = "KML_RING_STILL_CROSSED"
+AREA_MISMATCH = "AREA_MISMATCH"
+KML_HELD_FOR_REVIEW = "KML_HELD_FOR_REVIEW"
 
 REASON_CODES = (
     NO_COORDINATE_TABLE,
@@ -29,6 +31,8 @@ REASON_CODES = (
     CRS_UNRESOLVED_NO_TRANSFORM,
     KML_NO_WGS84,
     KML_RING_STILL_CROSSED,
+    AREA_MISMATCH,
+    KML_HELD_FOR_REVIEW,
 )
 
 
@@ -174,6 +178,9 @@ def collect_pipeline_diagnostics(
     diagnostics.extend(
         inspect_kml_polygons(polygons or [])
     )
+    diagnostics.extend(
+        inspect_polygon_area_qa(polygons or [])
+    )
     return merge_diagnostics(diagnostics)
 
 
@@ -258,6 +265,56 @@ def inspect_kml_polygons(polygons):
                         detail="KML ring still self-intersects after repair.",
                     )
                 )
+    return diagnostics
+
+
+def inspect_polygon_area_qa(polygons):
+    """Export gate: declared table ha vs computed ring ha."""
+
+    diagnostics = []
+    held = False
+    for polygon in polygons or []:
+        if not polygon.get("area_mismatch"):
+            continue
+        held = True
+        declared = polygon.get("declared_ha")
+        computed = polygon.get("computed_ha", polygon.get("area_ha"))
+        ratio = polygon.get("area_ratio")
+        diagnostics.append(
+            make_diagnostic(
+                AREA_MISMATCH,
+                severity="error",
+                stage="area_qa",
+                class_id="table_vs_polygon_area_qa",
+                table_type=polygon.get("table_type", "DIGER"),
+                polygon_group=polygon.get("polygon_group", "DEFAULT"),
+                table_index=polygon.get("table_index"),
+                declared_ha=declared,
+                computed_ha=computed,
+                ratio=ratio,
+                detail=(
+                    "Declared table area "
+                    f"{declared} ha vs computed ring "
+                    f"{computed} ha (ratio {ratio}). "
+                    "Polygon is skipped from KML export."
+                ),
+            )
+        )
+
+    if held:
+        diagnostics.append(
+            make_diagnostic(
+                KML_HELD_FOR_REVIEW,
+                severity="error",
+                stage="kml_exporter",
+                class_id="table_vs_polygon_area_qa",
+                detail=(
+                    "At least one polygon failed table-vs-geometry "
+                    "area QA and was not exported. Destekci must "
+                    "review before treating the KML as clean."
+                ),
+            )
+        )
     return diagnostics
 
 
@@ -402,6 +459,10 @@ def format_diagnostics_text(diagnostics):
             location.append(str(item["polygon_group"]))
         if item.get("table_type"):
             location.append(str(item["table_type"]))
+        if item.get("declared_ha") is not None and item.get("computed_ha") is not None:
+            location.append(
+                f"{item['declared_ha']} ha→{item['computed_ha']} ha"
+            )
         where = f" ({', '.join(location)})" if location else ""
         detail = item.get("detail") or ""
         lines.append(
@@ -423,6 +484,9 @@ def compact_diagnostics(diagnostics):
             "table_type",
             "polygon_group",
             "point_count",
+            "declared_ha",
+            "computed_ha",
+            "ratio",
             "detail",
         ):
             if key in item:

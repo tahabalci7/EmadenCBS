@@ -43,6 +43,9 @@ class ProjectInfoExtractor:
             "license_no": self._extract_license_no(
                 normalized_text
             ),
+            "erisim_no": self._extract_erisim_no(
+                normalized_text
+            ),
             "province": province,
             "district": district,
             "ek_tip": self._extract_ek_tip(
@@ -697,91 +700,273 @@ class ProjectInfoExtractor:
 
         # Maden adlarını standart biçimde döndür.
         return value.upper()
+
+    _ERISIM_NUMBER = re.compile(
+        r"\bER(?:[Iİ][SŞ][Iİ]M)?\s*"
+        r"(?:NO(?:SU)?|NUMARASI|NUMARALI)?"
+        r"\s*[:.\-]?\s*(\d{4,10})\b",
+        flags=re.IGNORECASE,
+    )
+    _ERISIM_PREFIX = re.compile(
+        r"\bER(?:[Iİ][SŞ][Iİ]M)?\s*"
+        r"(?:NO(?:SU)?|NUMARASI|NUMARALI)?"
+        r"\s*[:.\-]?\s*$",
+        flags=re.IGNORECASE,
+    )
+    _ERISIM_TOKEN = re.compile(
+        r"\bER(?:[Iİ][SŞ][Iİ]M)?\b",
+        flags=re.IGNORECASE,
+    )
+    _COMPANY_REGISTRY_LABEL = re.compile(
+        r"(?:"
+        r"VERG[Iİ]\s+(?:NO(?:SU)?|NUMARASI|NUMARALI)|"
+        r"T[Iİ]CARET\s+ODASI(?:\s+S[Iİ]C[Iİ]L)?"
+        r"(?:\s*(?:NO(?:SU)?|NUMARASI|NUMARALI))?"
+        r")",
+        flags=re.IGNORECASE,
+    )
+    _COMPANY_REGISTRY_TAIL = re.compile(
+        r"^[\s/:.\-]*(?:\d{4,10}[\s/:.\-]*)*$"
+    )
+    _TICARET_ODASI_BEFORE = re.compile(
+        r"T[Iİ]CARET\s+ODASI\s*$",
+        flags=re.IGNORECASE,
+    )
+
     def _extract_license_no(self, text):
         """
         Ruhsat veya sicil numarasını gerçek ruhsat
         bağlamından çıkarır.
 
-        İR-1-1, R-1 vb. koordinat etiketleri ruhsat
-        numarası olarak kabul edilmez.
+        SİCİL / RN / İR / Ruhsat Numaralı, ERİŞİM'den
+        önce gelir. VERGİ NUMARASI ve ticaret odası
+        sicili ruhsat değildir. ER / ERİŞİM, sicil
+        adayı varken yedek değildir. İR-1-1, R-1 vb.
+        koordinat etiketleri ruhsat numarası sayılmaz.
         """
 
-        # Türkçe İ/I ve satır kırıklı tablo düzenleri
-        # (SİCİL NO / SICIL NO / 42077 sayılı ruhsat).
-        labeled_patterns = [
-            (
-                r"\bS[Iİ]C[Iİ]L\s*"
-                r"(?:NO(?:SU)?|NUMARASI)?"
-                r"\s*[:.\-]?\s*(\d{4,10})\b",
-                True,
-            ),
-            (
-                r"\bS[Iİ]C[Iİ]L\b"
-                r"(?:[^\d\n]{0,40})"
-                r"(\d{4,10})\b",
-                False,
-            ),
-            (
-                r"\bRUHSAT\s+S[Iİ]C[Iİ]L\s*"
-                r"(?:NO(?:SU)?|NUMARASI)?"
-                r"\s*[:.\-]?\s*(\d{4,10})\b",
-                True,
-            ),
-            (
-                r"\b(\d{4,10})\s+"
-                r"RUHSAT\s+NUMARALI\b",
-                True,
-            ),
-            (
-                r"\b(\d{4,10})\s+"
-                r"(?:SAYILI|NOLU|NO['’]?LU|NO\.?\s*LU)\s+"
-                r"RUHSAT\b",
-                True,
-            ),
-            (
-                r"\bRUHSAT\s*"
-                r"(?:NO(?:SU)?|NUMARASI)"
-                r"\s*[:.\-]?\s*(\d{4,10})\b",
-                True,
-            ),
-            (
-                r"\bRUHSAT\s*"
-                r"[:.\-]\s*(\d{4,10})\b",
-                True,
-            ),
-            (
-                r"\b(\d{4,10})\s+NUMARALI\b",
-                False,
-            ),
-            (
-                r"\bER[Iİ][SŞ][Iİ]M\s*"
-                r"(?:NO(?:SU)?|NUMARASI)?"
-                r"\s*[:.\-]?\s*(\d{4,10})\b",
-                False,
-            ),
-        ]
+        sicil = self._first_license_candidate(
+            text,
+            self._sicil_license_patterns(),
+        )
+        if sicil:
+            return sicil
 
-        for pattern, strong in labeled_patterns:
-            match = re.search(
-                pattern,
-                text,
-                flags=re.IGNORECASE,
-            )
+        ruhsat = self._first_license_candidate(
+            text,
+            self._ruhsat_license_patterns(),
+        )
+        if ruhsat:
+            return ruhsat
 
-            if match is None:
-                continue
+        # Sicil/ruhsat yoksa mevcut ERİŞİM yedeği.
+        # Sicil varken buraya düşülmez.
+        erisim = self._extract_erisim_no(text)
+        if erisim != self.UNKNOWN:
+            return erisim
 
-            candidate = self._clean_value(
-                match.group(1)
-            )
+        return self.UNKNOWN
 
+    def _extract_erisim_no(self, text):
+        """ER / ERİŞİM numarasını ayrı tutar; KML gövdesi değildir."""
+
+        if not text:
+            return self.UNKNOWN
+
+        for match in self._ERISIM_NUMBER.finditer(text):
+            candidate = self._clean_value(match.group(1))
             if self._is_plausible_license_no(
                 candidate,
-                strong=strong,
+                strong=False,
             ):
                 return candidate
 
-        return "Bilinmiyor"
+        return self.UNKNOWN
+
+    @classmethod
+    def _sicil_license_patterns(cls):
+        # SİCİL her zaman ERİŞİM'den önce denenir.
+        # S:{n}(ER:{m}) ve "n SİCİL ... ER:{m}"
+        # düzenlerinde sayı SİCİL sözcüğünden önce gelir;
+        # gevşek "SİCİL ... sayı" tarayıcısı ER'yi
+        # yakalamasın diye aradaki ER etiketini atlar.
+        return (
+            (
+                re.compile(
+                    r"\bRN\s*[:.]\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b[Iİ]R\s*[:.]\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\bS\s*[:.]\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b(\d{4,10})\s+"
+                    r"(?:RUHSAT\s+)?"
+                    r"S[Iİ]C[Iİ]L\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b(?:RUHSAT\s+)?"
+                    r"S[Iİ]C[Iİ]L\s*"
+                    r"(?:NO(?:SU)?|NUMARASI|NUMARALI)?"
+                    r"\s*[:.\-]?\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b(?:RUHSAT\s+)?"
+                    r"S[Iİ]C[Iİ]L\b"
+                    r"([^\d\n]{0,40})"
+                    r"(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "sicil_after_label",
+            ),
+        )
+
+    @classmethod
+    def _ruhsat_license_patterns(cls):
+        return (
+            (
+                re.compile(
+                    r"\b(\d{4,10})\s+"
+                    r"RUHSAT\s+NUMARALI\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b(\d{4,10})\s+"
+                    r"(?:SAYILI|NOLU|NO['’]?LU|NO\.?\s*LU)\s+"
+                    r"RUHSAT\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\bRUHSAT\s*"
+                    r"(?:NO(?:SU)?|NUMARASI)"
+                    r"\s*[:.\-]?\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\bRUHSAT\s*"
+                    r"[:.\-]\s*(\d{4,10})\b",
+                    flags=re.IGNORECASE,
+                ),
+                True,
+                "labeled",
+            ),
+            (
+                re.compile(
+                    r"\b(\d{4,10})\s+NUMARALI\b",
+                    flags=re.IGNORECASE,
+                ),
+                False,
+                "labeled",
+            ),
+        )
+
+    def _first_license_candidate(self, text, patterns):
+        if not text:
+            return ""
+
+        for compiled, strong, kind in patterns:
+            for match in compiled.finditer(text):
+                number_group = (
+                    2 if kind == "sicil_after_label" else 1
+                )
+                if kind == "sicil_after_label":
+                    between = match.group(1)
+                    if self._ERISIM_TOKEN.search(between):
+                        continue
+
+                if self._number_is_erisim_tagged(text, match):
+                    continue
+
+                if self._number_is_company_registry(text, match):
+                    continue
+
+                candidate = self._clean_value(
+                    match.group(number_group)
+                )
+                if self._is_plausible_license_no(
+                    candidate,
+                    strong=strong,
+                ):
+                    return candidate
+
+        return ""
+
+    def _number_is_erisim_tagged(self, text, match):
+        """ER / ERİŞİM ile etiketlenmiş sayıyı sicil sayma."""
+
+        number_group = 1
+        if match.lastindex and match.lastindex >= 2:
+            number_group = match.lastindex
+
+        prefix = text[
+            max(0, match.start(number_group) - 48)
+            : match.start(number_group)
+        ]
+        return bool(self._ERISIM_PREFIX.search(prefix))
+
+    def _number_is_company_registry(self, text, match):
+        """VERGİ veya ticaret odası sicilini ruhsat sayma."""
+
+        number_group = 1
+        if match.lastindex and match.lastindex >= 2:
+            number_group = match.lastindex
+
+        num_start = match.start(number_group)
+        prefix = text[max(0, num_start - 96):num_start]
+        last_label = None
+        for label in self._COMPANY_REGISTRY_LABEL.finditer(prefix):
+            last_label = label
+        if last_label is not None:
+            tail = prefix[last_label.end():]
+            if self._COMPANY_REGISTRY_TAIL.match(tail):
+                return True
+
+        before_label = text[
+            max(0, match.start() - 24):match.start()
+        ]
+        return bool(
+            self._TICARET_ODASI_BEFORE.search(before_label)
+        )
 
     @classmethod
     def _is_plausible_license_no(

@@ -148,6 +148,7 @@ LAYOUT_CLASSES = (
             "unattested_lattice_not_composite_ring",
             "galeri_oversize_hull_is_pins",
             "sicil_nolu_alan_is_ruhsat",
+            "numbered_ced_labels_stay_separate",
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
@@ -171,7 +172,9 @@ LAYOUT_CLASSES = (
             "Alan and Ruhsatlı Alan headings type the ring as RUHSAT "
             "even when ÇED is also named. On an EK-1 selected-site "
             "appendix page, the Sicil Nolu Alan colon dual-CRS block "
-            "is the ruhsat ring."
+            "is the ruhsat ring. Numbered ÇED labels "
+            "(ÇED Alanı-1..n, ÇED-1, ÇED Alanı 2) stay separate "
+            "rings; their vertices are not merged into one hull."
         ),
     },
     {
@@ -189,6 +192,8 @@ LAYOUT_CLASSES = (
             "export_path_il_ek_sicil_company",
             "export_stem_includes_mine_type",
             "license_no_missing_flag_for_destekci",
+            "sicil_preferred_over_erisim",
+            "vergi_not_license_no",
         ),
         "contract": (
             "Restore {İL}/{Ek-1|Ek-2}/{sicil} - {firma} - "
@@ -199,7 +204,14 @@ LAYOUT_CLASSES = (
             "stem. Missing il, Ek tip, sicil, firma, or maden "
             "cinsi stay visible as Bilinmiyor. Unreadable sicil "
             "is not invented; license_no_missing tells Destekci "
-            "to ask the user before overwrite export."
+            "to ask the user before overwrite export. When a "
+            "title carries both SİCİL and ERİŞİM (S:{n} SİCİL "
+            "ER:{m}, S:{n}(ER:{m}), Sicil:{n}, RUHSAT SİCİL "
+            "NO), license_no / KML stem / balloon use SİCİL, "
+            "never the ER number. RN: / İR: / Ruhsat Numaralı "
+            "are ruhsat codes (İR-1-1 vertex labels are not). "
+            "VERGİ NUMARASI and TİCARET ODASI SİCİL are not "
+            "license_no."
         ),
     },
     {
@@ -219,6 +231,44 @@ LAYOUT_CLASSES = (
             "target_pages even when they are beyond the fast-scan "
             "max_pages window (150). Folder EK-2 (PTD project type) "
             "is not the same as this appendix label EK-1."
+        ),
+    },
+    {
+        "id": "table_vs_polygon_area_qa",
+        "title": "Table vs polygon area QA",
+        "modules": (
+            "src.coordinate.area_qa",
+            "src.coordinate.polygon_builder",
+            "src.coordinate.pipeline_contract",
+            "src.export.kml_exporter",
+        ),
+        "capabilities": (
+            "parse_declared_area_from_heading",
+            "compare_declared_vs_computed",
+            "skip_mismatch_on_export",
+            "hold_export_for_review",
+            "merged_multiced_ring_fails_qa",
+        ),
+        "contract": (
+            "When a table/header associates an area type with a "
+            "declared area (ha or m²), that value is attached to "
+            "the built polygon. After shoelace area (same CRS "
+            "assumptions as PolygonBuilder: UTM metres, else "
+            "equirectangular lon/lat), compare declared vs "
+            "computed. Match when "
+            "abs(computed-declared) <= max(15% of declared, "
+            "0.10 ha). Tiny tesisi parcels use the 0.10 ha "
+            "floor. On mismatch: AREA_MISMATCH (declared_ha, "
+            "computed_ha, ratio), the ring is skipped from KML, "
+            "and KML_HELD_FOR_REVIEW is set. Silent wrong "
+            "geometry is worse than skip. POINT / Galeri pins "
+            "are not compared. No declared area is a no-op. "
+            "Several numbered ÇED tables (ÇED Alanı-1..n, each "
+            "with its own declared ha and a few corners) stay "
+            "separate rings beside a ruhsat-scale ring; merging "
+            "those vertices into one huge ÇED (declared ~18 ha, "
+            "computed hundreds/thousands of ha) is held, not "
+            "exported."
         ),
     },
 )

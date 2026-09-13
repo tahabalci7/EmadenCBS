@@ -19,10 +19,18 @@ from src.coordinate.layout_capabilities import (
     layout_class,
 )
 from src.coordinate.pipeline import run_coordinate_pipeline
+from src.coordinate.area_qa import (
+    ABSOLUTE_FLOOR_HA,
+    RELATIVE_TOLERANCE,
+    compare_declared_vs_computed,
+    parse_declared_area_ha,
+)
 from src.coordinate.pipeline_contract import (
+    AREA_MISMATCH,
     CRS_INHERITED,
     DETECTED_TABLE_NO_POINTS,
     GROUP_BELOW_POLYGON_SIZE,
+    KML_HELD_FOR_REVIEW,
     KML_NO_WGS84,
     KML_RING_STILL_CROSSED,
     NO_COORDINATE_TABLE,
@@ -237,6 +245,7 @@ class LayoutCapabilityMapTests(unittest.TestCase):
                 "grouping_typing",
                 "metadata_kml_naming",
                 "coordinate_appendix_index",
+                "table_vs_polygon_area_qa",
             ),
         )
         for item in LAYOUT_CLASSES:
@@ -262,6 +271,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         )
         self.assertIn(
             "license_no_missing_flag_for_destekci",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
+            "sicil_preferred_over_erisim",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
+            "vergi_not_license_no",
             layout_class("metadata_kml_naming")["capabilities"],
         )
         self.assertIn(
@@ -311,6 +328,26 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "appendix_pages_beyond_fast_scan",
             layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "numbered_ced_labels_stay_separate",
+            layout_class("grouping_typing")["capabilities"],
+        )
+        self.assertIn(
+            "parse_declared_area_from_heading",
+            layout_class("table_vs_polygon_area_qa")["capabilities"],
+        )
+        self.assertIn(
+            "skip_mismatch_on_export",
+            layout_class("table_vs_polygon_area_qa")["capabilities"],
+        )
+        self.assertIn(
+            "hold_export_for_review",
+            layout_class("table_vs_polygon_area_qa")["capabilities"],
+        )
+        self.assertIn(
+            "merged_multiced_ring_fails_qa",
+            layout_class("table_vs_polygon_area_qa")["capabilities"],
         )
 
     def test_extract_coordinates_still_returns_a_list(self):
@@ -1845,6 +1882,85 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
         self.assertEqual(Path(relative).parts[1], "Ek-1")
         self.assertTrue(relative.endswith(".kml"))
 
+    def test_sicil_preferred_over_erisim_in_title_layouts(self):
+        fixtures = (
+            (
+                "S:67802 SİCİL NUMARALI VE ER:2542506 "
+                "ERİŞİM NUMARALI",
+                "67802",
+                "2542506",
+            ),
+            (
+                "S:68987(ER:2548828)",
+                "68987",
+                "2548828",
+            ),
+            (
+                "S:24431 SİCİL VE ER: 2168532 ERİŞİM",
+                "24431",
+                "2168532",
+            ),
+            (
+                "IV. Grup S: 200610240 Sicil Numaralı ve "
+                "ER: 1508418 Erişim Numaralı",
+                "200610240",
+                "1508418",
+            ),
+            (
+                "Sicil: 58130 ve ERİŞİM NUMARASI: 1508418",
+                "58130",
+                "1508418",
+            ),
+            (
+                "RUHSAT SİCİL NO: 42077 ER:2542506 ERİŞİM",
+                "42077",
+                "2542506",
+            ),
+        )
+        extractor = ProjectInfoExtractor()
+        for text, sicil, erisim in fixtures:
+            with self.subTest(text=text):
+                info = extractor.extract(
+                    "Nihai ÇED Raporu\n"
+                    f"PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.\n"
+                    f"{text}\n"
+                    "KUVARSİT OCAĞI"
+                )
+                self.assertEqual(info["license_no"], sicil)
+                self.assertEqual(info["erisim_no"], erisim)
+                self.assertFalse(info["license_no_missing"])
+                name = ProjectInfoExtractor.build_export_filename(
+                    info
+                )
+                self.assertTrue(name.startswith(f"{sicil} - "))
+                self.assertFalse(name.startswith(f"{erisim} - "))
+                balloon = info["license_no"]
+                self.assertEqual(balloon, sicil)
+                self.assertNotEqual(balloon, erisim)
+
+    def test_vergi_and_ticaret_odasi_are_not_ruhsat(self):
+        text = "\n".join(
+            [
+                "Nihai ÇED Raporu",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "VERGİ NUMARASI / TİCARET ODASI SİCİL NO",
+                "7810523944 / 936009",
+                "İR: 201300587 , ER: 3297705",
+                "RN:201300587",
+                "201300587 Ruhsat Numaralı BOKSİT OCAĞI",
+            ]
+        )
+        info = ProjectInfoExtractor().extract(text)
+        self.assertEqual(info["license_no"], "201300587")
+        self.assertNotIn(
+            info["license_no"],
+            {"7810523944", "936009", "3297705"},
+        )
+        self.assertFalse(info["license_no_missing"])
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("201300587 - "))
+        self.assertFalse(name.startswith("7810523944"))
+
 
 class CoordinateAppendixIndexClassTests(unittest.TestCase):
     def test_toc_ek1_appendix_beyond_fast_scan(self):
@@ -2239,6 +2355,346 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
                 "RUHSAT_ALANI",
                 [{"y": easting, "x": northing} for easting, northing in spread],
             )
+        )
+
+
+class TableVsPolygonAreaQaTests(unittest.TestCase):
+    """Declared table ha vs computed ring ha — export gate."""
+
+    def test_parse_declared_area_prefers_hectares(self):
+        self.assertAlmostEqual(
+            parse_declared_area_ha("183.081 m² (18,30 ha)"),
+            18.30,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            parse_declared_area_ha("1916,11 ha"),
+            1916.11,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            parse_declared_area_ha(
+                "1719 Sicil Nolu Alana Ait Koordinatlar ( 1.849,19 Hektar )"
+            ),
+            1849.19,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            parse_declared_area_ha("ALAN: 21,75 ha"),
+            21.75,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            parse_declared_area_ha("500 m²"),
+            0.05,
+            places=4,
+        )
+        self.assertIsNone(
+            parse_declared_area_ha("Toplam Alan: 24,96 ha")
+        )
+        self.assertEqual(RELATIVE_TOLERANCE, 0.15)
+        self.assertEqual(ABSOLUTE_FLOOR_HA, 0.10)
+
+    def test_declared_18_3_ha_rejects_thousand_hectare_ring(self):
+        bogus = square_utm(434529, 4205189, math.sqrt(1509 * 10000))
+        text = page(
+            167,
+            "Tablo 4.1. ÇED Alanı-1 Koordinatları",
+            *CRS,
+            "ÇED Alanı-1 (183.081 m² (18,30 ha))",
+            *stacked_utm_lines(("C1", "C2", "C3", "C4"), bogus),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        ced = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "CED_ALANI"
+        ]
+        self.assertEqual(len(ced), 1)
+        self.assertTrue(ced[0].get("area_mismatch"))
+        self.assertAlmostEqual(ced[0]["declared_ha"], 18.30, places=2)
+        self.assertGreater(ced[0]["area_ha"], 1000)
+        self.assertGreater(ced[0]["area_ratio"], 50)
+        self.assertIn(AREA_MISMATCH, pipeline["reason_codes"])
+        self.assertIn(KML_HELD_FOR_REVIEW, pipeline["reason_codes"])
+
+        mismatch = [
+            item
+            for item in pipeline["diagnostics"]
+            if item["code"] == AREA_MISMATCH
+        ]
+        self.assertEqual(mismatch[0]["declared_ha"], 18.3)
+        self.assertGreater(mismatch[0]["computed_ha"], 1000)
+        self.assertGreater(mismatch[0]["ratio"], 50)
+
+        model = ProjectModel(
+            pdf_path="area-qa.pdf",
+            coordinates=pipeline["coordinates"],
+            polygons=pipeline["polygons"],
+            tables=pipeline["tables"],
+            diagnostics=pipeline["diagnostics"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            kml_path = Path(tmp) / "mismatch.kml"
+            review = KMLExporter.export(model, str(kml_path))
+            tree = ET.parse(kml_path)
+        self.assertTrue(review["held_for_review"])
+        self.assertEqual(review["skipped_count"], 1)
+        self.assertEqual(
+            tree.findall(".//{http://www.opengis.net/kml/2.2}Polygon"),
+            [],
+        )
+
+    def test_declared_and_computed_area_agree_within_tolerance(self):
+        ring = square_utm(434529, 4205189, math.sqrt(18.30 * 10000))
+        text = page(
+            12,
+            "Tablo 2. ÇED Alanı Koordinatları",
+            *CRS,
+            "ÇED Alanı (18,30 ha)",
+            *stacked_utm_lines(("C1", "C2", "C3", "C4"), ring),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        ced = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "CED_ALANI"
+        ]
+        self.assertEqual(len(ced), 1)
+        self.assertAlmostEqual(ced[0]["declared_ha"], 18.30, places=2)
+        self.assertAlmostEqual(ced[0]["area_ha"], 18.30, delta=0.05)
+        self.assertFalse(ced[0].get("area_mismatch"))
+        self.assertNotIn(AREA_MISMATCH, pipeline["reason_codes"])
+        self.assertNotIn(KML_HELD_FOR_REVIEW, pipeline["reason_codes"])
+
+        model = ProjectModel(
+            pdf_path="area-qa-ok.pdf",
+            coordinates=pipeline["coordinates"],
+            polygons=pipeline["polygons"],
+            tables=pipeline["tables"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            kml_path = Path(tmp) / "ok.kml"
+            review = KMLExporter.export(model, str(kml_path))
+            tree = ET.parse(kml_path)
+        self.assertFalse(review["held_for_review"])
+        self.assertEqual(
+            len(tree.findall(".//{http://www.opengis.net/kml/2.2}Polygon")),
+            1,
+        )
+
+    def test_tiny_facility_parcel_uses_absolute_floor(self):
+        ring = square_utm(500000, 4200000, math.sqrt(0.08 * 10000))
+        text = page(
+            8,
+            "Tablo 6. Kırma Eleme Tesisi Koordinatları",
+            *CRS,
+            "Kırma Eleme Tesisi Koordinatları (0,05 ha)",
+            *stacked_utm_lines(("T1", "T2", "T3", "T4"), ring),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        tesis = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "KIRMA_ELEME_ALANI"
+        ]
+        self.assertEqual(len(tesis), 1)
+        self.assertAlmostEqual(tesis[0]["declared_ha"], 0.05, places=2)
+        self.assertFalse(tesis[0].get("area_mismatch"))
+        self.assertNotIn(AREA_MISMATCH, pipeline["reason_codes"])
+
+    def test_numbered_ced_labels_stay_separate_rings(self):
+        ced_one = square_utm(434529, 4205189, math.sqrt(18.30 * 10000))
+        ced_two = square_utm(436000, 4207000, math.sqrt(3.00 * 10000))
+        text = page(
+            20,
+            "Tablo 3. ÇED Alanları Koordinatları",
+            *CRS,
+            "ÇED Alanı-1 (18,30 ha)",
+            *stacked_utm_lines(("A1", "A2", "A3", "A4"), ced_one),
+            "ÇED Alanı-2 (3,00 ha)",
+            *stacked_utm_lines(("B1", "B2", "B3", "B4"), ced_two),
+        )
+        pipeline = run_coordinate_pipeline(text)
+        ced = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "CED_ALANI"
+        ]
+        self.assertEqual(len(ced), 2)
+        areas = sorted(polygon["area_ha"] for polygon in ced)
+        self.assertAlmostEqual(areas[0], 3.00, delta=0.05)
+        self.assertAlmostEqual(areas[1], 18.30, delta=0.05)
+        self.assertTrue(
+            all(not polygon.get("area_mismatch") for polygon in ced)
+        )
+        self.assertNotIn(AREA_MISMATCH, pipeline["reason_codes"])
+        groups = {polygon.get("polygon_group") for polygon in ced}
+        self.assertGreaterEqual(len(groups), 2)
+
+    def test_six_separate_ced_tables_and_ruhsat_stay_distinct(self):
+        """Numbered ÇED tables stay six rings beside a ruhsat-scale ring.
+
+        Witness class (named PDF is not an allowlist): six ÇED Alanı-N
+        tables (ÇED-1 ~18.30 ha / 4 corners; file total ~24.96 ha) plus
+        ruhsat ~1916.11 ha. A merged ~1509 ha ÇED is the failure this
+        fixture must not reproduce.
+        """
+
+        ced_specs = (
+            (1, 18.30, 434529.0, 4205189.0),
+            (2, 2.20, 437000.0, 4208000.0),
+            (3, 1.50, 439000.0, 4210000.0),
+            (4, 1.20, 441000.0, 4212000.0),
+            (5, 1.00, 443000.0, 4214000.0),
+            (6, 0.76, 445000.0, 4216000.0),
+        )
+        pages = []
+        for ced_number, area_ha, origin_y, origin_x in ced_specs:
+            ha_text = f"{area_ha:.2f}".replace(".", ",")
+            ring = square_utm(
+                origin_y,
+                origin_x,
+                math.sqrt(area_ha * 10000),
+            )
+            pages.append(
+                page(
+                    167,
+                    f"Tablo 4.{ced_number}. ÇED Alanı-{ced_number} "
+                    "Koordinatları",
+                    *CRS,
+                    f"ÇED Alanı-{ced_number} ({ha_text} ha)",
+                    *stacked_utm_lines(
+                        tuple(
+                            f"C{ced_number}.{index}"
+                            for index in range(1, 5)
+                        ),
+                        ring,
+                    ),
+                    f"Alan: {ha_text} ha",
+                )
+            )
+        ruhsat_utm = hexagon_utm(460000.0, 4230000.0, 1916.11)
+        pages.append(
+            page(
+                199,
+                "Tablo 5. Ruhsat Alanı Koordinatları",
+                *CRS,
+                "Ruhsat Alanı Koordinatları (1916,11 ha)",
+                *stacked_utm_lines(
+                    ("R1", "R2", "R3", "R4", "R5", "R6"),
+                    ruhsat_utm,
+                ),
+            )
+        )
+        text = "\n".join(pages)
+        tables = TableDetector.find_tables(text)
+        self.assertGreaterEqual(len(tables), 7)
+
+        pipeline = run_coordinate_pipeline(text, tables=tables)
+        ced = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "CED_ALANI"
+            and polygon.get("geometry_type", "POLYGON") == "POLYGON"
+        ]
+        ruhsat = [
+            polygon
+            for polygon in pipeline["polygons"]
+            if polygon["table_type"] == "RUHSAT_ALANI"
+            and polygon.get("geometry_type", "POLYGON") == "POLYGON"
+        ]
+        self.assertEqual(len(ced), 6)
+        self.assertEqual(len(ruhsat), 1)
+        ced_areas = sorted(polygon["area_ha"] for polygon in ced)
+        expected = sorted(area for _n, area, _y, _x in ced_specs)
+        for got, want in zip(ced_areas, expected):
+            self.assertAlmostEqual(got, want, delta=0.08)
+        self.assertAlmostEqual(sum(ced_areas), 24.96, delta=0.15)
+        self.assertAlmostEqual(ruhsat[0]["area_ha"], 1916.11, delta=3.0)
+        self.assertTrue(
+            all(not polygon.get("area_mismatch") for polygon in ced)
+        )
+        self.assertFalse(ruhsat[0].get("area_mismatch"))
+        self.assertNotIn(AREA_MISMATCH, pipeline["reason_codes"])
+        self.assertLess(max(ced_areas), 50)
+        groups = {polygon.get("polygon_group") for polygon in ced}
+        self.assertGreaterEqual(len(groups), 6)
+
+        model = ProjectModel(
+            pdf_path="multi-ced.pdf",
+            coordinates=pipeline["coordinates"],
+            polygons=pipeline["polygons"],
+            tables=pipeline["tables"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            kml_path = Path(tmp) / "multi-ced.kml"
+            review = KMLExporter.export(model, str(kml_path))
+            tree = ET.parse(kml_path)
+        self.assertFalse(review["held_for_review"])
+        self.assertEqual(
+            len(tree.findall(".//{http://www.opengis.net/kml/2.2}Polygon")),
+            7,
+        )
+
+    def test_merged_multiced_vertices_fail_area_qa(self):
+        """One DEFAULT ÇED ring from many tables must not export silently.
+
+        If ÇED Alanı-1..n vertices (or a ruhsat-scale hull) collapse into
+        one group, declared ÇED-1 ~18.30 ha vs a ~1509 ha computed ring
+        is AREA_MISMATCH and is skipped from KML.
+        """
+
+        comparison = compare_declared_vs_computed(18.30, 1509.0)
+        self.assertFalse(comparison["match"])
+        self.assertGreater(comparison["ratio"], 50)
+
+        bogus = square_utm(434529, 4205189, math.sqrt(1509 * 10000))
+        coordinates = []
+        for index, (easting, northing) in enumerate(bogus):
+            coordinates.append(
+                {
+                    "name": f"C1.{index + 1}",
+                    "y": easting,
+                    "x": northing,
+                    "table_type": "CED_ALANI",
+                    "section": "ÇED Alanı",
+                    "table_index": 1,
+                    "polygon_group": "DEFAULT",
+                    "polygon_heading": "ÇED Alanı-1 (18,30 ha)",
+                    "declared_ha": 18.30,
+                }
+            )
+        polygons = PolygonBuilder.build(coordinates)
+        self.assertEqual(len(polygons), 1)
+        self.assertTrue(polygons[0].get("area_mismatch"))
+        self.assertAlmostEqual(polygons[0]["declared_ha"], 18.30, places=2)
+        self.assertGreater(polygons[0]["area_ha"], 1000)
+
+        diagnostics = collect_pipeline_diagnostics(
+            ["table"],
+            coordinates,
+            polygons,
+        )
+        self.assertIn(AREA_MISMATCH, reason_codes(diagnostics))
+        self.assertIn(KML_HELD_FOR_REVIEW, reason_codes(diagnostics))
+
+        model = ProjectModel(
+            pdf_path="merged-ced.pdf",
+            coordinates=coordinates,
+            polygons=polygons,
+            tables=["table"],
+            diagnostics=diagnostics,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            kml_path = Path(tmp) / "merged.kml"
+            review = KMLExporter.export(model, str(kml_path))
+            tree = ET.parse(kml_path)
+        self.assertTrue(review["held_for_review"])
+        self.assertEqual(review["skipped_count"], 1)
+        self.assertEqual(
+            tree.findall(".//{http://www.opengis.net/kml/2.2}Polygon"),
+            [],
         )
 
 
