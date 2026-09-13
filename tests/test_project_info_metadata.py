@@ -67,6 +67,10 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         info = self.extractor.extract(text)
         self.assertEqual(info["license_no"], "Bilinmiyor")
+        self.assertTrue(info["license_no_missing"])
+        self.assertTrue(
+            ProjectInfoExtractor.is_missing_license_no(info)
+        )
 
     def test_company_label_prefix_is_stripped(self):
         text = "PROJE SAHİBİNİN ADI: Söğütsen Seramik Sanayi A.Ş."
@@ -100,6 +104,15 @@ class ProjectInfoMetadataTests(unittest.TestCase):
             "42077 - Söğütsen Seramik Sanayi - Bilinmiyor",
         )
         self.assertNotIn("NUMARALI", name)
+        self.assertFalse(
+            ProjectInfoExtractor.is_missing_license_no(
+                {
+                    "company": "Söğütsen Seramik Sanayi",
+                    "license_no": "42077",
+                    "mine_type": "NUMARALI MANYEZİT MADEN",
+                }
+            )
+        )
 
     def test_filename_does_not_lead_with_bilinmiyor_when_sicil_exists(self):
         file_name = ProjectInfoExtractor.build_export_filename(
@@ -126,7 +139,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             name,
-            "Bilinmiyor - Ülkem İnşaat Mad - Bilinmiyor",
+            "Bilinmiyor - Ülkem İnşaat Mad. - Bilinmiyor",
         )
         self.assertTrue(name.startswith("Bilinmiyor"))
         self.assertNotIn("NUMARALI", name)
@@ -194,6 +207,23 @@ class ProjectInfoMetadataTests(unittest.TestCase):
             / "53284 - Uytaş A_S - Bilinmiyor.kml",
         )
 
+    def test_missing_sicil_flag_does_not_invent_license(self):
+        info = {
+            "company": "Ülkem İnşaat Mad.",
+            "license_no": "Bilinmiyor",
+            "mine_type": "PERLIT",
+        }
+        self.assertTrue(
+            ProjectInfoExtractor.is_missing_license_no(info)
+        )
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("Bilinmiyor - "))
+        self.assertIn("PERLIT", name)
+        self.assertNotEqual(
+            name.split(" - ", 1)[0],
+            "Ülkem İnşaat Mad.",
+        )
+
     def test_export_stem_includes_extracted_mine_type(self):
         file_name = ProjectInfoExtractor.build_export_filename(
             {
@@ -219,6 +249,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         info = self.extractor.extract(text)
         self.assertEqual(info["mine_type"], "MANYEZİT")
+        self.assertFalse(info["license_no_missing"])
         relative = ProjectInfoExtractor.build_export_relative_path(info)
         self.assertEqual(
             Path(relative),
@@ -276,6 +307,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         self.assertEqual(info["ek_tip"], "Ek-1")
         self.assertEqual(info["province"], "Ankara")
         self.assertEqual(info["license_no"], "3927")
+        self.assertFalse(info["license_no_missing"])
 
     def test_ek_tip_from_ptd_cover_title(self):
         text = "\n".join(

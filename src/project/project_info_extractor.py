@@ -50,11 +50,15 @@ class ProjectInfoExtractor:
             ),
         }
 
-        return self._fill_missing_context(
+        info = self._fill_missing_context(
             info,
             source_path=source_path,
             project_type=project_type,
         )
+        info["license_no_missing"] = self.is_missing_license_no(
+            info
+        )
+        return info
 
     _COMPANY_LABEL_PREFIX = re.compile(
         r"^(?:"
@@ -841,7 +845,10 @@ class ProjectInfoExtractor:
         şirket-sonra-sicil sırasını kodladı; bu fonksiyon
         o regresyonu geri alır. Sicil yoksa Bilinmiyor önde
         kalır; şirket-only stem üretilmez. Eksik maden
-        cinsi Bilinmiyor olarak eklenir.
+        cinsi Bilinmiyor olarak eklenir. Eksik sicil
+        uydurulmaz; `license_no_missing` /
+        `is_missing_license_no` Destekci'nin kullanıcıya
+        sorması gereken placeholder'dır.
         """
 
         return cls.build_export_filename(
@@ -855,7 +862,12 @@ class ProjectInfoExtractor:
         project_info,
         default="Proje",
     ):
-        """Dosya gövdesi: `{sicil} - {firma} - {maden_cinsi}` (klasörsüz)."""
+        """Dosya gövdesi: `{sicil} - {firma} - {maden_cinsi}` (klasörsüz).
+
+        Sicil okunamazsa gövdede Bilinmiyor kalır; bu bir
+        tahmin değil. Destekci, dışa aktarmadan önce
+        `is_missing_license_no` ile kullanıcıya sormalıdır.
+        """
 
         info = project_info or {}
         license_no = (
@@ -891,7 +903,9 @@ class ProjectInfoExtractor:
         `{İL}/EK-1|EK-2/` (`CEDBatchProcessor`) aynı klasör
         sözleşmesini koruyordu. Ek-1 / Ek-2 klasörde kalır,
         gövdede tekrarlanmaz. Eksik il / Ek / sicil / firma
-        / maden cinsi Bilinmiyor olarak görünür.
+        / maden cinsi Bilinmiyor olarak görünür. Sicil
+        placeholder'ı sessizce bırakılmamalı: Destekci
+        `license_no_missing` görürse kullanıcıya sormalı.
         """
 
         info = project_info or {}
@@ -911,6 +925,13 @@ class ProjectInfoExtractor:
         return str(
             Path(province) / ek_folder / f"{stem}.kml"
         )
+
+    @classmethod
+    def is_missing_license_no(cls, project_info):
+        """Sicil boş veya Bilinmiyor ise True (kullanıcıya sor)."""
+
+        info = project_info or {}
+        return not cls._usable_name_token(info.get("license_no"))
 
     @classmethod
     def _ek_folder_name(cls, value):

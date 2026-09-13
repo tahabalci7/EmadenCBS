@@ -261,6 +261,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("metadata_kml_naming")["capabilities"],
         )
         self.assertIn(
+            "license_no_missing_flag_for_destekci",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
             "late_caption_not_previous_continuation",
             layout_class("table_continuation")["capabilities"],
         )
@@ -1811,6 +1815,7 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
         )
         info = ProjectInfoExtractor().extract(text)
         self.assertEqual(info["license_no"], "42077")
+        self.assertFalse(info["license_no_missing"])
         self.assertEqual(info["ek_tip"], "Ek-1")
         self.assertIn("Örnek Madencilik", info["company"])
         self.assertFalse(info["company"].upper().startswith("PROJE"))

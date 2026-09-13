@@ -188,6 +188,7 @@ LAYOUT_CLASSES = (
             "ek_tip_from_ced_or_ptd_title",
             "export_path_il_ek_sicil_company",
             "export_stem_includes_mine_type",
+            "license_no_missing_flag_for_destekci",
         ),
         "contract": (
             "Restore {İL}/{Ek-1|Ek-2}/{sicil} - {firma} - "
@@ -196,7 +197,9 @@ LAYOUT_CLASSES = (
             "under the root. Ek-1 is ÇED Raporu / Nihai ÇED; "
             "Ek-2 is PTD. Ek tip stays in the folder, not the "
             "stem. Missing il, Ek tip, sicil, firma, or maden "
-            "cinsi stay visible as Bilinmiyor."
+            "cinsi stay visible as Bilinmiyor. Unreadable sicil "
+            "is not invented; license_no_missing tells Destekci "
+            "to ask the user before overwrite export."
         ),
     },
     {
