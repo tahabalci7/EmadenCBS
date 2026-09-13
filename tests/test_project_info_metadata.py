@@ -344,6 +344,125 @@ class ProjectInfoMetadataTests(unittest.TestCase):
             / "11880 - Koyuncu Nakliye Ltd. Şti. - Bilinmiyor.kml",
         )
 
+    def test_s_sicil_and_er_erisim_prefers_sicil(self):
+        text = (
+            "S:67802 SİCİL NUMARALI VE ER:2542506 "
+            "ERİŞİM NUMARALI KUVARSİT OCAĞI"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "67802")
+        self.assertEqual(info["erisim_no"], "2542506")
+        self.assertFalse(info["license_no_missing"])
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("67802 - "))
+        self.assertFalse(name.startswith("2542506"))
+
+    def test_s_parenthetical_er_prefers_sicil(self):
+        text = "S:68987(ER:2548828) MERMER OCAĞI"
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "68987")
+        self.assertEqual(info["erisim_no"], "2548828")
+        self.assertFalse(info["license_no_missing"])
+        name = ProjectInfoExtractor.build_project_export_name(info)
+        self.assertTrue(name.startswith("68987"))
+        self.assertNotIn("2548828", name)
+
+    def test_s_sicil_ve_er_erisim_prefers_sicil(self):
+        text = "S:24431 SİCİL VE ER: 2168532 ERİŞİM"
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "24431")
+        self.assertNotEqual(info["license_no"], "2168532")
+        self.assertEqual(info["erisim_no"], "2168532")
+        self.assertFalse(info["license_no_missing"])
+
+    def test_grup_s_sicil_numarali_and_er_prefers_sicil(self):
+        text = (
+            "IV. Grup S: 200610240 Sicil Numaralı ve "
+            "ER: 1508418 Erişim Numaralı"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "200610240")
+        self.assertEqual(info["erisim_no"], "1508418")
+        self.assertFalse(info["license_no_missing"])
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                **info,
+                "province": "Adana",
+                "ek_tip": "Ek-2",
+                "company": "Örnek Madencilik A.Ş.",
+            }
+        )
+        self.assertTrue(
+            Path(relative).name.startswith("200610240 - ")
+        )
+        self.assertNotIn("1508418", Path(relative).name)
+
+    def test_sicil_colon_label_still_preferred_to_erisim(self):
+        text = (
+            "Sicil: 58130 faaliyet alanı. "
+            "ERİŞİM NUMARASI: 1508418"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "58130")
+        self.assertEqual(info["erisim_no"], "1508418")
+        self.assertFalse(info["license_no_missing"])
+
+    def test_ruhsat_sicil_no_nearby_number_beats_erisim(self):
+        text = (
+            "RUHSAT SİCİL NO: 58130 "
+            "ER:1508418 ERİŞİM NUMARALI"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "58130")
+        self.assertEqual(info["erisim_no"], "1508418")
+
+    def test_ruhsat_sicil_numarali_nearby_number(self):
+        text = (
+            "Ruhsat Sicil Numaralı 42077 "
+            "ERİŞİM NO: 2542506"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "42077")
+        self.assertEqual(info["erisim_no"], "2542506")
+        self.assertFalse(info["license_no_missing"])
+
+    def test_grup_s_sicil_with_utm_like_erisim_still_uses_sicil(self):
+        """ER in the 3.x million range is not a sicil substitute."""
+
+        text = (
+            "IV. Grup S: 200610240 Sicil Numaralı ve "
+            "ER: 3119598 Erişim Numaralı"
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "200610240")
+        self.assertNotEqual(info["license_no"], "3119598")
+        self.assertFalse(info["license_no_missing"])
+
+    def test_s_prefix_labeled_as_sicil_without_erisim(self):
+        text = "S:67802 SİCİL NUMARALI KUVARSİT OCAĞI"
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "67802")
+        self.assertEqual(info["erisim_no"], "Bilinmiyor")
+        self.assertFalse(info["license_no_missing"])
+
+    def test_erisim_only_remains_last_resort_license(self):
+        text = "ERİŞİM NUMARASI: 2542506"
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "2542506")
+        self.assertEqual(info["erisim_no"], "2542506")
+        self.assertFalse(info["license_no_missing"])
+
+    def test_missing_sicil_still_flags_destekci(self):
+        text = "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş."
+        info = self.extractor.extract(text)
+        self.assertEqual(info["license_no"], "Bilinmiyor")
+        self.assertTrue(info["license_no_missing"])
+        self.assertTrue(
+            ProjectInfoExtractor.is_missing_license_no(info)
+        )
+        name = ProjectInfoExtractor.build_export_filename(info)
+        self.assertTrue(name.startswith("Bilinmiyor - "))
+
     def test_pdf_ek_tip_wins_over_source_folder(self):
         text = "\n".join(
             [
