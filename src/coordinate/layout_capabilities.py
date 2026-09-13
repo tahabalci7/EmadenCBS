@@ -191,14 +191,38 @@ LAYOUT_CLASSES = (
         "capabilities": (
             "toc_ek1_appendix_to_target_pages",
             "appendix_pages_beyond_fast_scan",
+            "toc_ek1_unnumbered_or_wrapped",
+            "appendix_body_scan_without_printed_page",
         ),
         "contract": (
-            "İÇİNDEKİLER / TOC entries for the selected-site "
-            "coordinate appendix (EK-1 / Ek 1- / 1- Proje için "
-            "seçilen yerin koordinatları) add those pages to "
+            "İÇİNDEKİLER / EKLER entries for the selected-site "
+            "coordinate appendix (EK-1 / Ek 1 / Ek 1- / 1- Proje "
+            "için seçilen yerin koordinatları) add those pages to "
             "target_pages even when they are beyond the fast-scan "
-            "max_pages window (150). Folder EK-2 (PTD project type) "
-            "is not the same as this appendix label EK-1."
+            "max_pages window (150). Wrapped titles and lines "
+            "without dotted leaders / page numbers still resolve "
+            "via a late appendix body scan. Folder EK-2 (PTD "
+            "project type) is not the same as this appendix label "
+            "EK-1."
+        ),
+    },
+    {
+        "id": "scanned_coordinate_appendix",
+        "title": "Scanned EK-1 coordinate appendix",
+        "modules": (
+            "src.coordinate.table_index",
+            "src.core.pdf_text_extraction_service",
+        ),
+        "capabilities": (
+            "ocr_when_appendix_lacks_utm_pairs",
+        ),
+        "contract": (
+            "When the selected-site coordinate appendix is "
+            "referenced but the text layer of those pages has no "
+            "6-digit UTM pairs, the live export path OCRs the "
+            "planned appendix pages. A dust-monitor / hava "
+            "kalitesi X/Y table is not a substitute for the "
+            "scanned appendix rings."
         ),
     },
 )
