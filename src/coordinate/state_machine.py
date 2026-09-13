@@ -644,6 +644,125 @@ def parse_point_at(lines, start, allow_numeric_labels):
     }
 
 
+def _numeric_values_from_line(line):
+    tokens = _merge_space_grouped_thousands(
+        [
+            token.strip()
+            for token in str(line).split()
+            if token.strip() and token.strip() != ":"
+        ]
+    )
+    values = []
+    leftovers = []
+    for token in tokens:
+        if not is_number(token):
+            leftovers.append(token)
+            continue
+        try:
+            values.append(to_float(token))
+        except (TypeError, ValueError):
+            leftovers.append(token)
+    return values, leftovers
+
+
+def _window_is_coordinate_record(window):
+    for line in window:
+        if is_ignorable_table_context_line(line):
+            return False
+        if _looks_like_column_header(line):
+            return False
+        if re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]{3,}", str(line)):
+            return False
+    return True
+
+
+def parse_stitched_dual_crs_point(lines, start, allow_numeric_labels):
+    """Recover one point from a 2–4 line dual-CRS dump window.
+
+    Side-by-side UTM | geographic columns are often extracted as
+    ``index lat`` then ``Y X lon``, not as four stacked lines.
+    """
+
+    if start >= len(lines):
+        return None
+
+    for length in (4, 3, 2):
+        end = start + length
+        if end > len(lines):
+            continue
+        window = lines[start:end]
+        if not _window_is_coordinate_record(window):
+            continue
+
+        numbers = []
+        leftover_tokens = []
+        for line in window:
+            values, leftovers = _numeric_values_from_line(line)
+            numbers.extend(values)
+            leftover_tokens.extend(leftovers)
+
+        eastings = [value for value in numbers if is_utm_easting(value)]
+        northings = [value for value in numbers if is_utm_northing(value)]
+        if len(eastings) != 1 or len(northings) != 1:
+            continue
+
+        utm_y, utm_x = eastings[0], northings[0]
+        used = {utm_y, utm_x}
+        label_numbers = [
+            value
+            for value in numbers
+            if value not in used
+            and value == int(value)
+            and 1 <= value < 1000
+            and not is_utm_easting(value)
+            and not is_utm_northing(value)
+        ]
+        geo_numbers = [
+            value
+            for value in numbers
+            if value not in used
+            and value not in label_numbers
+        ]
+        if len(geo_numbers) != 2:
+            continue
+        latitude, longitude = order_geographic(
+            utm_y,
+            utm_x,
+            geo_numbers[0],
+            geo_numbers[1],
+        )
+        if not is_valid_coordinate_block(
+            utm_y,
+            utm_x,
+            latitude,
+            longitude,
+        ):
+            continue
+
+        if leftover_tokens:
+            label = leftover_tokens[0]
+        elif label_numbers:
+            label = str(int(label_numbers[0]))
+        elif allow_numeric_labels:
+            label = ""
+        else:
+            continue
+
+        if is_number(label) and not allow_numeric_labels:
+            continue
+
+        return {
+            "label": label,
+            "utm_y": utm_y,
+            "utm_x": utm_x,
+            "latitude": latitude,
+            "longitude": longitude,
+            "consumed": length,
+        }
+
+    return None
+
+
 def _looks_like_column_header(line):
     normalized = TableClassifier._normalize(line)
 
@@ -2631,6 +2750,12 @@ def parse_coordinate_blocks(
                     i,
                     allow_numeric_labels,
                 )
+                if parsed is None:
+                    parsed = parse_stitched_dual_crs_point(
+                        lines,
+                        i,
+                        allow_numeric_labels,
+                    )
                 if parsed is not None:
                     consumed = parsed["consumed"]
                     label = parsed["label"]

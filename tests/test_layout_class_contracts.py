@@ -813,6 +813,8 @@ class CoordinateRecordLayoutClassTests(unittest.TestCase):
 
         tables = TableDetector.find_tables(text)
         self.assertGreaterEqual(len(tables), 3)
+        live_coordinates = CoordinateEngine.extract_coordinates(text)
+        self.assertGreaterEqual(len(live_coordinates), 12)
         pipeline = run_coordinate_pipeline(text, tables=tables)
         self.assertGreaterEqual(len(pipeline["coordinates"]), 12)
         self.assertGreaterEqual(len(pipeline["polygons"]), 3)
@@ -826,6 +828,45 @@ class CoordinateRecordLayoutClassTests(unittest.TestCase):
             types & {"CED_ALANI", "YENI_CED_ALANI", "MEVCUT_CED_ALANI"}
         )
         self.assertIn("STOK_ALANI", types)
+
+    def test_dual_crs_live_interleave_is_not_detected_table_no_points(self):
+        """Side-by-side columns often dump index+lat, then Y/X+lon."""
+
+        pairs = square_utm(675382, 4144399, 212)
+        geos = (
+            (37.4282393, 34.9817757),
+            (37.4269372, 34.9793456),
+            (37.4252000, 34.9790000),
+            (37.4265000, 34.9820000),
+        )
+        rows = []
+        for index, (easting, northing), (latitude, longitude) in zip(
+            ("1", "2", "3", "4"),
+            pairs,
+            geos,
+        ):
+            rows.extend(
+                (
+                    f"{index} {latitude:.7f}",
+                    f"{easting:.3f} {northing:.3f} {longitude:.7f}",
+                )
+            )
+        text = page(
+            35,
+            "Tablo 9. 1 Nolu Ruhsat Poligonu (P1) Koordinatları",
+            "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+            "DATUM: ED-50              DATUM: WGS-84",
+            "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+            *rows,
+            "Toplam Alan: 262,57 ha",
+        )
+        tables = TableDetector.find_tables(text)
+        self.assertGreater(len(tables), 0)
+        pipeline = run_coordinate_pipeline(text, tables=tables)
+        self.assertGreaterEqual(len(pipeline["coordinates"]), 4)
+        self.assertGreaterEqual(len(pipeline["polygons"]), 1)
+        self.assertNotIn(DETECTED_TABLE_NO_POINTS, pipeline["reason_codes"])
+        self.assertEqual(pipeline["coordinates"][0]["y"], 675382.0)
 
 
 class DetectorParserContractClassTests(unittest.TestCase):

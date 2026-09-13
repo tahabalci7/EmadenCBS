@@ -58,7 +58,8 @@ LAYOUT_CLASSES = (
             "swapped northing/easting, unlabeled, grouped-thousands, "
             "unlabeled lon/lat-only rings, or dual-CRS side-by-side "
             "rows (index; SAĞA/YUKARI on one line; ENLEM then BOYLAM "
-            "on the following lines) become points."
+            "on the following lines, including the live text-layer "
+            "interleave index+lat then Y/X+lon) become points."
         ),
     },
     {

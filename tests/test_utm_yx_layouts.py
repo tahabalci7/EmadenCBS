@@ -248,6 +248,37 @@ class UtmYXLayoutTests(unittest.TestCase):
         self.assertAlmostEqual(points[0]["latitude"], 37.4282393)
         self.assertAlmostEqual(points[0]["longitude"], 34.9817757)
         self.assertEqual(points[0]["table_type_override"], "RUHSAT_ALANI")
+        coordinates = CoordinateEngine.extract_coordinates(text)
+        self.assertEqual(len(coordinates), 2)
+        self.assertEqual(coordinates[0]["y"], 675382.0)
+        self.assertEqual(coordinates[0]["x"], 4144399.002)
+
+    def test_side_by_side_interleave_index_lat_then_yx_lon(self):
+        text = "\n".join(
+            [
+                "KOORDINAT",
+                "Tablo 9. 1 Nolu Ruhsat Poligonu (P1) Koordinatları",
+                "UTM KOORDİNATLAR          COĞRAFİK KOORDİNATLAR",
+                "DATUM: ED-50              DATUM: WGS-84",
+                "Sıra No SAĞA (Y) YUKARI (X)   ENLEM   BOYLAM",
+                "1 37.4282393",
+                "675382.000 4144399.002 34.9817757",
+                "2 37.4269372",
+                "675170.000 4144250.002 34.9793456",
+                "3 37.4252000",
+                "675000.000 4144100.002 34.9790000",
+                "4 37.4265000",
+                "675200.000 4144300.002 34.9820000",
+            ]
+        )
+        coordinates = CoordinateEngine.extract_coordinates(text)
+        self.assertEqual(len(coordinates), 4)
+        self.assertEqual(coordinates[0]["y"], 675382.0)
+        self.assertEqual(coordinates[0]["x"], 4144399.002)
+        self.assertAlmostEqual(coordinates[0]["latitude"], 37.4282393)
+        self.assertAlmostEqual(coordinates[0]["longitude"], 34.9817757)
+        polygons = PolygonBuilder.build(coordinates)
+        self.assertEqual(len(polygons), 1)
 
     def test_space_grouped_thousands_are_not_split_as_a_pair(self):
         text = "\n".join(
