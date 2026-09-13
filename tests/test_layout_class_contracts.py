@@ -257,6 +257,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("crs_inheritance")["capabilities"],
         )
         self.assertIn(
+            "export_stem_includes_mine_type",
+            layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
             "late_caption_not_previous_continuation",
             layout_class("table_continuation")["capabilities"],
         )
@@ -1828,6 +1832,12 @@ class MetadataKmlNamingClassTests(unittest.TestCase):
         self.assertTrue(
             Path(relative).name.startswith("42077 - ")
         )
+        self.assertIn(
+            info.get("mine_type") or "Bilinmiyor",
+            Path(relative).stem,
+        )
+        self.assertEqual(Path(relative).parts[0], "Ankara")
+        self.assertEqual(Path(relative).parts[1], "Ek-1")
         self.assertTrue(relative.endswith(".kml"))
 
 

@@ -97,7 +97,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         self.assertTrue(name.startswith("42077"))
         self.assertEqual(
             name,
-            "42077 - Söğütsen Seramik Sanayi",
+            "42077 - Söğütsen Seramik Sanayi - Bilinmiyor",
         )
         self.assertNotIn("NUMARALI", name)
 
@@ -109,7 +109,10 @@ class ProjectInfoMetadataTests(unittest.TestCase):
                 "mine_type": "NUMARALI BİTÜMLÜ ŞEYL",
             }
         )
-        self.assertEqual(file_name, "38302 - Bilinmiyor")
+        self.assertEqual(
+            file_name,
+            "38302 - Bilinmiyor - Bilinmiyor",
+        )
         self.assertTrue(file_name.startswith("38302"))
         self.assertNotIn("NUMARALI", file_name)
 
@@ -121,7 +124,10 @@ class ProjectInfoMetadataTests(unittest.TestCase):
                 "mine_type": "NUMARALI PERLIT",
             }
         )
-        self.assertEqual(name, "Bilinmiyor - Ülkem İnşaat Mad")
+        self.assertEqual(
+            name,
+            "Bilinmiyor - Ülkem İnşaat Mad - Bilinmiyor",
+        )
         self.assertTrue(name.startswith("Bilinmiyor"))
         self.assertNotIn("NUMARALI", name)
 
@@ -138,7 +144,9 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             Path(relative),
-            Path("Ankara") / "Ek-1" / "3927 - ALKİM A.Ş.kml",
+            Path("Ankara")
+            / "Ek-1"
+            / "3927 - ALKİM A.Ş. - Bilinmiyor.kml",
         )
 
     def test_export_relative_path_accepts_project_type_alias(self):
@@ -152,7 +160,9 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             Path(relative),
-            Path("Konya") / "Ek-2" / "86538 - Madinsan Ltd. Şti.kml",
+            Path("Konya")
+            / "Ek-2"
+            / "86538 - Madinsan Ltd. Şti. - Bilinmiyor.kml",
         )
 
     def test_missing_fields_stay_visible_in_relative_path(self):
@@ -165,7 +175,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
             Path(relative),
             Path("Bilinmiyor")
             / "Bilinmiyor"
-            / "Bilinmiyor - Koyuncu Nakliye Ltd. Şti.kml",
+            / "Bilinmiyor - Koyuncu Nakliye Ltd. Şti. - Bilinmiyor.kml",
         )
 
     def test_path_separators_in_company_are_sanitized(self):
@@ -179,8 +189,79 @@ class ProjectInfoMetadataTests(unittest.TestCase):
         )
         self.assertEqual(
             Path(relative),
-            Path("İzmir") / "Ek-2" / "53284 - Uytaş A_S.kml",
+            Path("İzmir")
+            / "Ek-2"
+            / "53284 - Uytaş A_S - Bilinmiyor.kml",
         )
+
+    def test_export_stem_includes_extracted_mine_type(self):
+        file_name = ProjectInfoExtractor.build_export_filename(
+            {
+                "company": "Söğütsen Seramik Sanayi",
+                "license_no": "42077",
+                "mine_type": "MANYEZİT",
+            }
+        )
+        self.assertEqual(
+            file_name,
+            "42077 - Söğütsen Seramik Sanayi - MANYEZİT",
+        )
+
+    def test_extract_feeds_mine_type_into_relative_path(self):
+        text = "\n".join(
+            [
+                "NİHAİ ÇED RAPORU",
+                "ANKARA İLİ",
+                "PROJE SAHİBİNİN ADI: Örnek Madencilik A.Ş.",
+                "SİCİL NO: 3927",
+                "MADEN CİNSİ: MANYEZİT",
+            ]
+        )
+        info = self.extractor.extract(text)
+        self.assertEqual(info["mine_type"], "MANYEZİT")
+        relative = ProjectInfoExtractor.build_export_relative_path(info)
+        self.assertEqual(
+            Path(relative),
+            Path("Ankara")
+            / "Ek-1"
+            / "3927 - Örnek Madencilik A.Ş. - MANYEZİT.kml",
+        )
+
+    def test_export_relative_path_keeps_ek_in_folder(self):
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                "province": "Ankara",
+                "ek_tip": "Ek-1",
+                "license_no": "3927",
+                "company": "ALKİM A.Ş.",
+                "mine_type": "TUZ",
+            }
+        )
+        self.assertEqual(
+            Path(relative),
+            Path("Ankara") / "Ek-1" / "3927 - ALKİM A.Ş. - TUZ.kml",
+        )
+        self.assertEqual(Path(relative).parts[0], "Ankara")
+        self.assertEqual(Path(relative).parts[1], "Ek-1")
+        self.assertNotIn("Ek-1", Path(relative).stem)
+
+    def test_path_separators_in_mine_type_are_sanitized(self):
+        relative = ProjectInfoExtractor.build_export_relative_path(
+            {
+                "province": "Konya",
+                "ek_tip": "Ek-2",
+                "license_no": "86538",
+                "company": "Madinsan Ltd. Şti.",
+                "mine_type": "KÖMÜR / KİL",
+            }
+        )
+        self.assertEqual(
+            Path(relative),
+            Path("Konya")
+            / "Ek-2"
+            / "86538 - Madinsan Ltd. Şti. - KÖMÜR _ KİL.kml",
+        )
+        self.assertEqual(len(Path(relative).parts), 3)
 
     def test_ek_tip_from_ced_cover_title(self):
         text = "\n".join(
@@ -228,7 +309,7 @@ class ProjectInfoMetadataTests(unittest.TestCase):
             Path(relative),
             Path("Ankara")
             / "Ek-2"
-            / "11880 - Koyuncu Nakliye Ltd. Şti.kml",
+            / "11880 - Koyuncu Nakliye Ltd. Şti. - Bilinmiyor.kml",
         )
 
     def test_pdf_ek_tip_wins_over_source_folder(self):

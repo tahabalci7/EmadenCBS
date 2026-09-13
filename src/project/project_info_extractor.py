@@ -834,13 +834,14 @@ class ProjectInfoExtractor:
         default="eMadenCBS Projesi",
     ):
         """
-        KML belge adı: `{sicil} - {firma}`.
+        KML belge adı: `{sicil} - {firma} - {maden_cinsi}`.
 
         Destekci / ürün sözleşmesi sicil-önde ister. PR #2
         (33cc525) `build_project_export_name` içinde
         şirket-sonra-sicil sırasını kodladı; bu fonksiyon
         o regresyonu geri alır. Sicil yoksa Bilinmiyor önde
-        kalır; şirket-only stem üretilmez.
+        kalır; şirket-only stem üretilmez. Eksik maden
+        cinsi Bilinmiyor olarak eklenir.
         """
 
         return cls.build_export_filename(
@@ -854,7 +855,7 @@ class ProjectInfoExtractor:
         project_info,
         default="Proje",
     ):
-        """Dosya gövdesi: `{sicil} - {firma}` (klasörsüz)."""
+        """Dosya gövdesi: `{sicil} - {firma} - {maden_cinsi}` (klasörsüz)."""
 
         info = project_info or {}
         license_no = (
@@ -865,7 +866,11 @@ class ProjectInfoExtractor:
             cls._usable_name_token(info.get("company"))
             or cls.UNKNOWN
         )
-        stem = f"{license_no} - {company}"
+        mine_type = (
+            cls._usable_name_token(info.get("mine_type"))
+            or cls.UNKNOWN
+        )
+        stem = f"{license_no} - {company} - {mine_type}"
         return cls._sanitize_path_component(stem, default=default)
 
     @classmethod
@@ -877,15 +882,16 @@ class ProjectInfoExtractor:
         """
         KML yazım yolu (ürün sözleşmesi / regresyon geri alımı):
 
-        `{İL}/Ek-1|Ek-2/{sicil} - {firma}.kml`
+        `{İL}/Ek-1|Ek-2/{sicil} - {firma} - {maden_cinsi}.kml`
 
         Bu iç içe yol builder git geçmişinde baseline
         (6e2515c) sonrası yok: GUI düz `{root}/{firma}_{sicil}`
         yazıyordu; `src/core/kml_export.py` o günden beri
         boş stub. e-ÇED indirme ağacı
         `{İL}/EK-1|EK-2/` (`CEDBatchProcessor`) aynı klasör
-        sözleşmesini koruyordu. Eksik il / Ek / sicil / firma
-        Bilinmiyor olarak görünür.
+        sözleşmesini koruyordu. Ek-1 / Ek-2 klasörde kalır,
+        gövdede tekrarlanmaz. Eksik il / Ek / sicil / firma
+        / maden cinsi Bilinmiyor olarak görünür.
         """
 
         info = project_info or {}

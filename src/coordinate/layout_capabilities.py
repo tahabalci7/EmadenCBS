@@ -187,13 +187,16 @@ LAYOUT_CLASSES = (
             "usable_export_name_tokens_only",
             "ek_tip_from_ced_or_ptd_title",
             "export_path_il_ek_sicil_company",
+            "export_stem_includes_mine_type",
         ),
         "contract": (
-            "Restore {İL}/{Ek-1|Ek-2}/{sicil} - {firma}.kml. PR #2 "
-            "(33cc525) inverted the stem to company-then-sicil; GUI "
-            "since 6e2515c wrote flat under the root. Ek-1 is ÇED "
-            "Raporu / Nihai ÇED; Ek-2 is PTD. Missing il, Ek tip, "
-            "sicil, or firma stay visible as Bilinmiyor."
+            "Restore {İL}/{Ek-1|Ek-2}/{sicil} - {firma} - "
+            "{maden_cinsi}.kml. PR #2 (33cc525) inverted the stem "
+            "to company-then-sicil; GUI since 6e2515c wrote flat "
+            "under the root. Ek-1 is ÇED Raporu / Nihai ÇED; "
+            "Ek-2 is PTD. Ek tip stays in the folder, not the "
+            "stem. Missing il, Ek tip, sicil, firma, or maden "
+            "cinsi stay visible as Bilinmiyor."
         ),
     },
     {
