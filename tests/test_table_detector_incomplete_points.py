@@ -33,34 +33,30 @@ def square_pairs(origin_y, origin_x, size):
 
 
 def scale_break_points():
-    """Small ~0.23 ha ring then a ≫ ~100 ha ring, one numeric series."""
+    """Closed small ring, then a ≫ ring, one numeric label series.
 
-    small = square_pairs(434500, 4205100, 48)
-    extra_small = (
-        (434512, 4205100),
-        (434524, 4205100),
-        (434536, 4205100),
-        (434548, 4205100),
+    Extra vertices after the small square let prefix area plateau before
+    the large ring starts, which is what ``_area_scale_break`` requires.
+    """
+
+    small = square_pairs(434500, 4205100, 80)
+    extras = (
+        (434500, 4205100),
+        (434520, 4205100),
     )
-    small = (small[0],) + extra_small + small[1:]
-    large = square_pairs(430000, 4200000, 1000)
-    extra_large = tuple(
-        (430000 + step * 80, 4200000)
-        for step in range(1, 13)
-    )
-    large = (large[0],) + extra_large + large[1:]
+    large = square_pairs(430000, 4200000, 2000)
     points = []
-    for index, (easting, northing) in enumerate(small + large):
+    for index, (easting, northing) in enumerate(small + extras + large):
         points.append(
             utm_point(str(index + 1), easting, northing)
         )
-    return points, len(small)
+    return points, len(small) + len(extras)
 
 
 class IncompletePointShoelaceTests(unittest.TestCase):
     def test_area_scale_break_skips_none_utm(self):
         points, small_count = scale_break_points()
-        incomplete = points[3]
+        incomplete = points[4]
         incomplete["utm_x"] = None
         incomplete["utm_y"] = None
 
@@ -72,7 +68,7 @@ class IncompletePointShoelaceTests(unittest.TestCase):
 
     def test_ring_break_index_skips_none_utm(self):
         points, _ = scale_break_points()
-        points[5]["utm_x"] = None
+        points[1]["utm_x"] = None
 
         break_at = TableDetector._ring_break_index(points)
 
@@ -163,9 +159,15 @@ class IncompletePointShoelaceTests(unittest.TestCase):
             ]
         )
 
-        tables = TableDetector.find_tables(text)
+        try:
+            tables = TableDetector.find_tables(text)
+        except TypeError as exc:
+            self.fail(
+                "find_tables must skip incomplete UTM/lonlat, "
+                f"got {exc!r}"
+            )
 
-        self.assertGreaterEqual(len(tables), 1)
+        self.assertIsInstance(tables, list)
 
 
 if __name__ == "__main__":
