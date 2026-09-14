@@ -25,6 +25,7 @@ LAYOUT_CLASSES = (
             "inherit_table_type_and_section",
             "late_caption_not_previous_continuation",
             "split_area_heading_starts_table",
+            "incomplete_coords_skip_area_scale_break",
         ),
         "contract": (
             "A headerless next page that continues UTM rows stays in the "
@@ -34,7 +35,10 @@ LAYOUT_CLASSES = (
             "not a continuation of the previous table. This includes rows "
             "already appended to an open numbered STOK/auxiliary table on "
             "the same page. Split captions such as Yeni ÇED / Alanı / "
-            "Koordinatları start a new table."
+            "Koordinatları start a new table. Incomplete vertices "
+            "(missing UTM or lon/lat pair) are skipped in the late-caption "
+            "area-scale ring break so table detection continues instead of "
+            "aborting on float(None)."
         ),
     },
     {

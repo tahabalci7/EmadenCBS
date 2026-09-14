@@ -269,6 +269,10 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             layout_class("table_continuation")["capabilities"],
         )
         self.assertIn(
+            "incomplete_coords_skip_area_scale_break",
+            layout_class("table_continuation")["capabilities"],
+        )
+        self.assertIn(
             "auxiliary_not_inherit_dominant_ring",
             layout_class("grouping_typing")["capabilities"],
         )
@@ -641,8 +645,116 @@ class TableContinuationClassTests(unittest.TestCase):
         }
         self.assertEqual(s_types, {"STOK_ALANI"})
 
+    def _numeric_series_points(self, pair_groups, incomplete_after=None):
+        """One 1..n label series; optional incomplete vertex after a group."""
+
+        points = []
+        serial = 1
+        for group_index, pairs in enumerate(pair_groups):
+            for easting, northing in pairs:
+                points.append(
+                    {
+                        "label": str(serial),
+                        "utm_y": easting,
+                        "utm_x": northing,
+                        "latitude": None,
+                        "longitude": None,
+                    }
+                )
+                serial += 1
+            if incomplete_after == group_index:
+                points.append(
+                    {
+                        "label": str(serial),
+                        "utm_y": easting,
+                        "utm_x": None,
+                        "latitude": None,
+                        "longitude": None,
+                    }
+                )
+                serial += 1
+        return points
+
+    def test_area_scale_break_skips_none_utm_without_typeerror(self):
+        """Late-caption shoelace must not call float(None) on a partial parse.
+
+        Destekci first-20 class: area-scale ring break assumed every vertex
+        had UTM. A None utm_x aborted find_tables for the whole PDF.
+        """
+
+        stok_pairs, ced_pairs, _leftover = self._stok_ced_scale_rings()
+        points = self._numeric_series_points(
+            (stok_pairs, ced_pairs),
+            incomplete_after=0,
+        )
+        self.assertTrue(
+            any(point.get("utm_x") is None for point in points)
+        )
+        try:
+            break_at = TableDetector._ring_break_index(points)
+        except TypeError as error:
+            self.fail(
+                "ring-break/shoelace raised TypeError on None utm_x: "
+                f"{error}"
+            )
+        self.assertIsNotNone(
+            break_at,
+            "incomplete vertex must not abort or hide the scale break",
+        )
+        self.assertGreaterEqual(break_at, len(stok_pairs))
+        self.assertLess(break_at, len(points) - 2)
+        self.assertIsNotNone(
+            TableDetector._numeric_pair(
+                points[break_at].get("utm_x"),
+                points[break_at].get("utm_y"),
+            ),
+            "break index must land on a complete UTM pair",
+        )
+
+    def test_find_tables_continues_when_late_caption_has_geo_only_points(self):
+        """Geographic-only verts (utm None) must not crash table detection."""
+
+        stok_pairs, _ced_pairs, leftover_pairs = self._stok_ced_scale_rings()
+        geo_lines = []
+        for latitude, longitude in (
+            (37.01000000, 35.12000000),
+            (37.02000000, 35.12000000),
+            (37.02000000, 35.13000000),
+            (37.01000000, 35.13000000),
+            (37.01500000, 35.12500000),
+            (37.01800000, 35.12800000),
+            (37.01200000, 35.12900000),
+            (37.01100000, 35.12100000),
+        ):
+            geo_lines.extend((f"{latitude:.8f}", f"{longitude:.8f}"))
+        text = page(
+            1,
+            "Tablo 4. Stok Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"S{i}" for i in range(1, 9)),
+                stok_pairs,
+            ),
+            *geo_lines,
+            "Tablo 5. Yeni ÇED Alanı Koordinatları",
+            *CRS,
+            *stacked_utm_lines(
+                tuple(f"Y{i}" for i in range(1, 5)),
+                leftover_pairs[:4],
+            ),
+        )
+        try:
+            tables = TableDetector.find_tables(text)
+        except TypeError as error:
+            self.fail(
+                "find_tables raised TypeError on None coordinates: "
+                f"{error}"
+            )
+        self.assertGreaterEqual(len(tables), 1)
+
 
 class CoordinateRecordLayoutClassTests(unittest.TestCase):
+
     def test_full_block_utm_only_column_major_and_thousands(self):
         full_block = parse_coordinate_blocks(
             "\n".join(
