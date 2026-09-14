@@ -19,6 +19,8 @@ from src.coordinate.project_model import ProjectModel
 from src.project.project_info_extractor import (
     ProjectInfoExtractor,
 )
+from src.coordinate.area_qa import evaluate_export_gate
+from src.export.kml_exporter import KMLExporter
 
 
 class CEDBatchProcessor:
@@ -27,6 +29,7 @@ class CEDBatchProcessor:
         self,
         province,
         downloads_root="downloads",
+        kml_root=None,
     ):
         self.province = province.upper()
 
@@ -37,6 +40,11 @@ class CEDBatchProcessor:
         self.province_dir = (
             self.downloads_root
             / self.province
+        )
+        self.kml_root = (
+            Path(kml_root)
+            if kml_root
+            else None
         )
 
         self.project_info_extractor = (
@@ -156,6 +164,10 @@ class CEDBatchProcessor:
             "polygon_count": 0,
             "status": "",
             "project_info": {},
+            "kml_path": "",
+            "quarantine_path": "",
+            "export_gate_ok": None,
+            "export_gate_codes": [],
             "error": "",
         }
 
@@ -454,6 +466,43 @@ class CEDBatchProcessor:
                     "BASARILI"
                 )
 
+            if polygons:
+                if self.kml_root is not None:
+                    relative = (
+                        ProjectInfoExtractor.build_export_relative_path(
+                            project_info
+                        )
+                    )
+                    kml_path = self.kml_root / relative
+                    export_result = KMLExporter.export(
+                        project_model,
+                        str(kml_path),
+                    )
+                else:
+                    export_result = evaluate_export_gate(
+                        project_model
+                    )
+                result["export_gate_ok"] = export_result.get(
+                    "ok"
+                )
+                result["export_gate_codes"] = list(
+                    export_result.get("codes") or []
+                )
+                result["kml_path"] = export_result.get("path") or ""
+                result["quarantine_path"] = (
+                    export_result.get("quarantine_path") or ""
+                )
+                if (
+                    result["status"] == "BASARILI"
+                    and not export_result.get("ok")
+                ):
+                    codes = result["export_gate_codes"]
+                    result["status"] = (
+                        codes[0]
+                        if codes
+                        else "EXPORT_BLOCKED"
+                    )
+
             print(
                 f"  OCR       : "
                 f"{result['ocr_method']}"
@@ -483,6 +532,12 @@ class CEDBatchProcessor:
                 print(
                     f"  Teşhis    : "
                     f"{', '.join(result['pipeline_reason_codes'])}"
+                )
+
+            if result.get("export_gate_codes"):
+                print(
+                    f"  Kapı      : "
+                    f"{', '.join(result['export_gate_codes'])}"
                 )
 
             print(

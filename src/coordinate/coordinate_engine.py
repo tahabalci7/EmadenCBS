@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from src.coordinate.table_classifier import TableClassifier
 from src.coordinate.crs_resolver import CRSResolver
 from src.coordinate.datum_detector import DatumDetector
+from src.coordinate.area_qa import attach_declared_area
 from src.coordinate.state_machine import (
     NUMBER_TOKEN_PATTERN,
     parse_coordinate_blocks,
@@ -379,6 +380,8 @@ class CoordinateEngine:
             except Exception:
                 pass
 
+        cls._attach_declared_areas(results, tables)
+
         results.sort(
             key=cls._priority_score,
             reverse=True,
@@ -389,6 +392,22 @@ class CoordinateEngine:
             "coordinates": results,
             "diagnostics": merge_diagnostics(diagnostics),
         }
+
+    @classmethod
+    def _attach_declared_areas(cls, results, tables):
+        if not results:
+            return
+        by_table = {}
+        for point in results:
+            table_index = point.get("table_index") or 0
+            by_table.setdefault(table_index, []).append(point)
+        for table_index, points in by_table.items():
+            table_text = None
+            if isinstance(table_index, int) and 1 <= table_index <= len(
+                tables or []
+            ):
+                table_text = tables[table_index - 1]
+            attach_declared_area(points, table_text)
 
     @classmethod
     def _numeric_tokens_from_text(cls, table_text):
@@ -576,6 +595,9 @@ class CoordinateEngine:
             ),
             "source_observation_identity": (
                 source_observation_identity
+            ),
+            "declared_ha": point.get(
+                "declared_ha"
             ),
             "projected_crs_epsg": (
                 transform_metadata[

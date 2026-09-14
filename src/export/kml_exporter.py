@@ -1,7 +1,14 @@
 import html
 import math
+import os
 import xml.etree.ElementTree as ET
 
+from src.coordinate.area_qa import (
+    evaluate_export_gate,
+    export_should_skip_polygon,
+    format_gate_message,
+    write_quarantine_reason,
+)
 from src.coordinate.ring_geometry import (
     repair_lonlat_rings,
 )
@@ -46,7 +53,38 @@ class KMLExporter:
         cls,
         project_model,
         file_path,
+        *,
+        quarantine=True,
     ):
+        """Write KML only when the pre-export gate passes.
+
+        On failure the intended path is not created or overwritten.
+        A structured reason is stored under ``_Duzeltme`` unless
+        ``quarantine`` is false.
+        """
+
+        gate = evaluate_export_gate(project_model)
+        if not gate["ok"]:
+            if quarantine and file_path:
+                gate["quarantine_path"] = write_quarantine_reason(
+                    file_path,
+                    gate,
+                )
+            gate["written"] = False
+            gate["path"] = None
+            gate["message"] = format_gate_message(gate)
+            return gate
+
+        cls._write_kml_document(project_model, file_path)
+        gate["written"] = True
+        gate["path"] = str(file_path)
+        gate["message"] = format_gate_message(gate)
+        return gate
+
+    @classmethod
+    def _write_kml_document(cls, project_model, file_path):
+        """Serialize KML XML. Production callers must go through export()."""
+
         ET.register_namespace(
             "",
             cls.KML_NAMESPACE,
@@ -85,11 +123,17 @@ class KMLExporter:
             space="  ",
         )
 
+        parent = os.path.dirname(file_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
         tree.write(
             file_path,
             encoding="utf-8",
             xml_declaration=True,
         )
+
+        return file_path
 
     @classmethod
     def _add_styles(cls, document):
@@ -216,6 +260,9 @@ class KMLExporter:
         grouped_polygons = {}
 
         for polygon in polygons:
+            if export_should_skip_polygon(polygon):
+                continue
+
             table_type = polygon.get(
                 "table_type",
                 "DIGER",
