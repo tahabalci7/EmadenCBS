@@ -570,7 +570,10 @@ class TableDetector:
         points = parse_coordinate_blocks(
             "\n".join(lines)
         )
-        break_at = cls._ring_break_index(points)
+        try:
+            break_at = cls._ring_break_index(points)
+        except (TypeError, ValueError):
+            return list(lines), []
 
         if break_at is None:
             return list(lines), []
@@ -645,30 +648,84 @@ class TableDetector:
         return None
 
     @classmethod
+    def _finite_float(cls, value):
+        if value is None:
+            return None
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _axis_pair(cls, point, first_key, second_key):
+        if not isinstance(point, dict):
+            return None
+
+        first = cls._finite_float(point.get(first_key))
+        second = cls._finite_float(point.get(second_key))
+
+        if first is None or second is None:
+            return None
+
+        return first, second
+
+    @classmethod
+    def _shoelace_vertices(cls, items):
+        """UTM metres when possible; otherwise lon/lat. Never mix axes."""
+
+        utm = []
+        geographic = []
+
+        for item in items:
+            pair = cls._axis_pair(item, "utm_y", "utm_x")
+
+            if pair is not None:
+                utm.append(pair)
+                continue
+
+            pair = cls._axis_pair(
+                item,
+                "longitude",
+                "latitude",
+            )
+
+            if pair is not None:
+                geographic.append(pair)
+
+        if len(utm) >= 3:
+            return utm
+
+        if len(geographic) >= 3:
+            return geographic
+
+        return []
+
+    @classmethod
     def _area_scale_break(cls, points):
         """Split when a finished small ring is followed by a ≫ ring.
 
         Used when labels are one numeric series (1..n) across two
         physical polygons. Require both sides to have real hectare-scale
         area so a single ÇED ring is not sliced at the first three verts.
+        Incomplete vertices (missing UTM or lon/lat) are skipped so
+        ``float(None)`` cannot abort ``find_tables``.
         """
 
         def shoelace(items):
-            if len(items) < 3:
+            vertices = cls._shoelace_vertices(items)
+
+            if len(vertices) < 3:
                 return 0.0
 
             area = 0.0
 
-            for index in range(len(items)):
-                nxt = (index + 1) % len(items)
-                area += (
-                    float(items[index]["utm_y"])
-                    * float(items[nxt]["utm_x"])
-                )
-                area -= (
-                    float(items[nxt]["utm_y"])
-                    * float(items[index]["utm_x"])
-                )
+            for index in range(len(vertices)):
+                nxt = (index + 1) % len(vertices)
+                easting, northing = vertices[index]
+                next_easting, next_northing = vertices[nxt]
+                area += easting * next_northing
+                area -= next_easting * northing
 
             return abs(area) / 2.0
 
