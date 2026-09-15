@@ -569,7 +569,7 @@ class TableDetector:
 
         points = parse_coordinate_blocks(
             "\n".join(lines)
-        )
+        ) or []
         break_at = cls._ring_break_index(points)
 
         if break_at is None:
@@ -596,7 +596,7 @@ class TableDetector:
 
     @classmethod
     def _ring_break_index(cls, points):
-        if len(points) < 6:
+        if not points or len(points) < 6:
             return None
 
         series_break = cls._label_series_break(points)
@@ -645,32 +645,97 @@ class TableDetector:
         return None
 
     @classmethod
+    def _numeric_pair(cls, first, second):
+        if first is None or second is None:
+            return None
+
+        try:
+            return (float(first), float(second))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _point_has_area_pair(cls, point):
+        """True when UTM (x, y) or geographic (lon, lat) is complete."""
+
+        if not isinstance(point, dict):
+            return False
+
+        return (
+            cls._numeric_pair(
+                point.get("utm_x"),
+                point.get("utm_y"),
+            )
+            is not None
+            or cls._numeric_pair(
+                point.get("longitude"),
+                point.get("latitude"),
+            )
+            is not None
+        )
+
+    @classmethod
+    def _shoelace_area(cls, items):
+        """Closed-ring area from complete vertices only.
+
+        Prefer UTM metres when at least three verts have both
+        ``utm_x`` and ``utm_y``. Otherwise use lon/lat. Incomplete
+        points (None / non-numeric) are skipped so late-caption
+        splits never call ``float(None)``.
+        """
+
+        utm_vertices = []
+        geo_vertices = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            utm = cls._numeric_pair(
+                item.get("utm_x"),
+                item.get("utm_y"),
+            )
+            if utm is not None:
+                utm_vertices.append(utm)
+                continue
+
+            geo = cls._numeric_pair(
+                item.get("longitude"),
+                item.get("latitude"),
+            )
+            if geo is not None:
+                geo_vertices.append(geo)
+
+        vertices = (
+            utm_vertices
+            if len(utm_vertices) >= 3
+            else geo_vertices
+        )
+
+        if len(vertices) < 3:
+            return 0.0
+
+        area = 0.0
+        count = len(vertices)
+
+        for index in range(count):
+            x1, y1 = vertices[index]
+            x2, y2 = vertices[(index + 1) % count]
+            area += y1 * x2
+            area -= y2 * x1
+
+        return abs(area) / 2.0
+
+    @classmethod
     def _area_scale_break(cls, points):
         """Split when a finished small ring is followed by a ≫ ring.
 
         Used when labels are one numeric series (1..n) across two
         physical polygons. Require both sides to have real hectare-scale
         area so a single ÇED ring is not sliced at the first three verts.
+        Incomplete vertices are not break candidates and are omitted
+        from the area sum.
         """
-
-        def shoelace(items):
-            if len(items) < 3:
-                return 0.0
-
-            area = 0.0
-
-            for index in range(len(items)):
-                nxt = (index + 1) % len(items)
-                area += (
-                    float(items[index]["utm_y"])
-                    * float(items[nxt]["utm_x"])
-                )
-                area -= (
-                    float(items[nxt]["utm_y"])
-                    * float(items[index]["utm_x"])
-                )
-
-            return abs(area) / 2.0
 
         count = len(points)
         minimum_area = 500.0
@@ -680,7 +745,7 @@ class TableDetector:
         plateau = 0
 
         for index in range(4, count - 2):
-            prefix_area = shoelace(points[:index])
+            prefix_area = cls._shoelace_area(points[:index])
 
             if (
                 previous_area
@@ -696,7 +761,10 @@ class TableDetector:
             if plateau < 1:
                 continue
 
-            suffix_area = shoelace(points[index:])
+            if not cls._point_has_area_pair(points[index]):
+                continue
+
+            suffix_area = cls._shoelace_area(points[index:])
 
             if (
                 prefix_area < minimum_area
