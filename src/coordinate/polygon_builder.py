@@ -1,6 +1,7 @@
 import math
 from collections import OrderedDict
 
+from src.coordinate.area_qa import apply_polygon_area_qa
 from src.coordinate.ring_geometry import (
     repair_self_intersecting_rings,
     trim_invented_lattice_composite,
@@ -114,6 +115,9 @@ class PolygonBuilder:
                             [],
                         )
                     ),
+                    "declared_ha": item.get(
+                        "declared_ha"
+                    ),
                     "points": [],
                 }
 
@@ -174,8 +178,15 @@ class PolygonBuilder:
                     "transformed_latitude": item.get(
                         "transformed_latitude"
                     ),
+                    "declared_ha": item.get(
+                        "declared_ha"
+                    ),
                 }
             )
+            if grouped[group_key].get("declared_ha") in (None, ""):
+                grouped[group_key]["declared_ha"] = item.get(
+                    "declared_ha"
+                )
 
         polygons = []
         seen_geometries = set()
@@ -199,16 +210,16 @@ class PolygonBuilder:
                     if len(group_points) >= 3
                     else 0
                 )
-                polygons.append(
-                    {
-                        **ring_group,
-                        "geometry_type": "POINT",
-                        "point_count": len(group_points),
-                        "is_closed": False,
-                        "area_m2": round(area, 2),
-                        "area_ha": round(area / 10000, 4),
-                    }
-                )
+                pin = {
+                    **ring_group,
+                    "geometry_type": "POINT",
+                    "point_count": len(group_points),
+                    "is_closed": False,
+                    "area_m2": round(area, 2),
+                    "area_ha": round(area / 10000, 4),
+                }
+                apply_polygon_area_qa(pin)
+                polygons.append(pin)
                 continue
 
             if len(group_points) < 3:
@@ -270,6 +281,7 @@ class PolygonBuilder:
                         4,
                     ),
                 }
+                apply_polygon_area_qa(polygon)
 
                 polygons.append(
                     polygon

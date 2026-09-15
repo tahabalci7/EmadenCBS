@@ -729,16 +729,26 @@ class MainWindow(QMainWindow):
             relative_path,
         )
 
-        os.makedirs(
-            os.path.dirname(file_path),
-            exist_ok=True,
-        )
-
         try:
-            KMLExporter.export(
+            result = KMLExporter.export(
                 self.current_project_model,
                 file_path,
-            )
+            ) or {}
+
+            if not result.get("ok"):
+                quarantine = result.get("quarantine_path") or ""
+                message = result.get("message") or (
+                    "KML yazılmadı: tablo alanı, CRS veya "
+                    "zorunlu katman kapısı başarısız."
+                )
+                if quarantine:
+                    message = f"{message}\n\nGerekçe: {quarantine}"
+                QMessageBox.critical(
+                    self,
+                    "KML Dışa Aktarma Engellendi",
+                    message,
+                )
+                return
 
             QMessageBox.information(
                 self,

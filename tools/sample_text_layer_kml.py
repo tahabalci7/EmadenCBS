@@ -241,9 +241,19 @@ def main():
         )
         kml_path = kml_dir / relative
         if result["polygon_count"]:
-            kml_path.parent.mkdir(parents=True, exist_ok=True)
-            KMLExporter.export(project, kml_path)
-            result["kml_path"] = str(kml_path)
+            export_result = KMLExporter.export(project, str(kml_path))
+            if export_result.get("ok"):
+                result["kml_path"] = export_result.get("path") or str(
+                    kml_path
+                )
+            else:
+                result["kml_path"] = ""
+                result["kml_skipped"] = ",".join(
+                    export_result.get("codes") or ["export_blocked"]
+                )
+                result["quarantine_path"] = export_result.get(
+                    "quarantine_path"
+                ) or ""
         else:
             result["kml_path"] = ""
             result["kml_skipped"] = "polygon_yok"

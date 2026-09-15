@@ -148,6 +148,7 @@ LAYOUT_CLASSES = (
             "unattested_lattice_not_composite_ring",
             "galeri_oversize_hull_is_pins",
             "sicil_nolu_alan_is_ruhsat",
+            "numbered_ced_labels_are_separate_rings",
         ),
         "contract": (
             "NOLU POLİGON / ÇED / ruhsat headings type and group points. "
@@ -171,7 +172,42 @@ LAYOUT_CLASSES = (
             "Alan and Ruhsatlı Alan headings type the ring as RUHSAT "
             "even when ÇED is also named. On an EK-1 selected-site "
             "appendix page, the Sicil Nolu Alan colon dual-CRS block "
-            "is the ruhsat ring."
+            "is the ruhsat ring. Numbered ÇED labels (ÇED Alanı-1 … "
+            "ÇED Alanı-6, ÇED-1) stay separate rings; do not merge "
+            "their vertices into one hull."
+        ),
+    },
+    {
+        "id": "table_vs_polygon_area_qa",
+        "title": "Table vs polygon area QA",
+        "modules": (
+            "src.coordinate.area_qa",
+            "src.coordinate.polygon_builder",
+            "src.coordinate.pipeline_contract",
+            "src.export.kml_exporter",
+        ),
+        "capabilities": (
+            "parse_declared_ha_and_m2",
+            "compare_shoelace_to_table_ha",
+            "block_kml_on_area_mismatch",
+            "block_kml_on_insane_crs",
+            "require_ruhsat_and_ced_layers",
+            "prefer_typed_over_diger_identical_ring",
+        ),
+        "contract": (
+            "Heading/caption declared ha or m² is attached to the built "
+            "polygon. After shoelace (UTM metres, else equirectangular "
+            "lon/lat) compare declared vs computed. Tolerance: "
+            "abs(computed − declared) ≤ max(15% × declared, 0.10 ha). "
+            "On mismatch, insane CRS (area > 5000 ha without a matching "
+            "declared figure, or lon/lat outside Turkey / the project's "
+            "province), or missing Ruhsat + ÇED: do not write KML. "
+            "Quarantine the structured reason under _Duzeltme. Identical "
+            "rings typed DIGER and a facility/ÇED export only the typed "
+            "ring. Ruhsat and ÇED may share a ring only when the heading "
+            "explicitly says Ruhsat ve ÇED. No declared area is a no-op "
+            "for the comparison (CRS/layer checks still apply). Galeri "
+            "POINT pins are not compared."
         ),
     },
     {

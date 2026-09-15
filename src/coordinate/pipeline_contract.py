@@ -19,6 +19,12 @@ CRS_INHERITED = "CRS_INHERITED"
 CRS_UNRESOLVED_NO_TRANSFORM = "CRS_UNRESOLVED_NO_TRANSFORM"
 KML_NO_WGS84 = "KML_NO_WGS84"
 KML_RING_STILL_CROSSED = "KML_RING_STILL_CROSSED"
+AREA_MISMATCH = "AREA_MISMATCH"
+CRS_AREA_INSANE = "CRS_AREA_INSANE"
+CRS_LONLAT_OUT_OF_RANGE = "CRS_LONLAT_OUT_OF_RANGE"
+MISSING_RUHSAT_OR_CED = "MISSING_RUHSAT_OR_CED"
+DUPLICATE_LAYER_GEOMETRY = "DUPLICATE_LAYER_GEOMETRY"
+EXPORT_BLOCKED = "EXPORT_BLOCKED"
 
 REASON_CODES = (
     NO_COORDINATE_TABLE,
@@ -29,6 +35,12 @@ REASON_CODES = (
     CRS_UNRESOLVED_NO_TRANSFORM,
     KML_NO_WGS84,
     KML_RING_STILL_CROSSED,
+    AREA_MISMATCH,
+    CRS_AREA_INSANE,
+    CRS_LONLAT_OUT_OF_RANGE,
+    MISSING_RUHSAT_OR_CED,
+    DUPLICATE_LAYER_GEOMETRY,
+    EXPORT_BLOCKED,
 )
 
 
@@ -96,7 +108,8 @@ def collect_pipeline_diagnostics(
     """Post-hoc contract checks usable by GUI and batch.
 
     Does not change geometry. Empty accepted tables, UTM without WGS84,
-    and dropped <3-vertex groups become reason codes.
+    dropped <3-vertex groups, and table-vs-polygon area mismatches
+    become reason codes. Layer completeness is enforced at KML write.
     """
 
     diagnostics = list(extra or [])
@@ -173,6 +186,9 @@ def collect_pipeline_diagnostics(
     )
     diagnostics.extend(
         inspect_kml_polygons(polygons or [])
+    )
+    diagnostics.extend(
+        inspect_polygon_area_qa(polygons or [])
     )
     return merge_diagnostics(diagnostics)
 
@@ -258,6 +274,74 @@ def inspect_kml_polygons(polygons):
                         detail="KML ring still self-intersects after repair.",
                     )
                 )
+    return diagnostics
+
+
+def inspect_polygon_area_qa(polygons):
+    """Per-polygon area/CRS QA codes. Layer completeness is export-time."""
+
+    from src.coordinate.area_qa import apply_polygon_area_qa
+
+    diagnostics = []
+    for polygon in polygons or []:
+        apply_polygon_area_qa(polygon)
+        if polygon.get("geometry_type") == "POINT":
+            continue
+        if polygon.get("export_suppressed"):
+            continue
+        table_type = polygon.get("table_type", "DIGER")
+        polygon_group = polygon.get("polygon_group", "DEFAULT")
+        title = (
+            polygon.get("polygon_heading")
+            or polygon.get("section")
+            or table_type
+        )
+        if polygon.get("area_mismatch"):
+            declared = polygon.get("declared_ha")
+            computed = polygon.get("computed_ha", polygon.get("area_ha"))
+            ratio = polygon.get("area_ratio")
+            diagnostics.append(
+                make_diagnostic(
+                    AREA_MISMATCH,
+                    severity="error",
+                    stage="area_qa",
+                    class_id="table_vs_polygon_area_qa",
+                    table_type=table_type,
+                    polygon_group=polygon_group,
+                    table_index=polygon.get("table_index"),
+                    table_title=title,
+                    declared_ha=declared,
+                    computed_ha=computed,
+                    ratio=ratio,
+                    detail=(
+                        "Declared table area "
+                        f"{declared} ha vs computed ring "
+                        f"{computed} ha (ratio {ratio}). "
+                        "KML export is blocked."
+                    ),
+                )
+            )
+        if polygon.get("crs_insane"):
+            code = polygon.get("crs_insane_code") or CRS_AREA_INSANE
+            if code not in REASON_CODES:
+                code = CRS_AREA_INSANE
+            diagnostics.append(
+                make_diagnostic(
+                    code,
+                    severity="error",
+                    stage="area_qa",
+                    class_id="table_vs_polygon_area_qa",
+                    table_type=table_type,
+                    polygon_group=polygon_group,
+                    table_index=polygon.get("table_index"),
+                    table_title=title,
+                    declared_ha=polygon.get("declared_ha"),
+                    computed_ha=polygon.get("area_ha"),
+                    ratio=polygon.get("area_ratio"),
+                    detail=polygon.get("crs_insane_detail")
+                    or "Polygon CRS/area is not plausible for export.",
+                )
+            )
     return diagnostics
 
 
@@ -402,6 +486,10 @@ def format_diagnostics_text(diagnostics):
             location.append(str(item["polygon_group"]))
         if item.get("table_type"):
             location.append(str(item["table_type"]))
+        if item.get("declared_ha") is not None and item.get("computed_ha") is not None:
+            location.append(
+                f"{item['declared_ha']} ha→{item['computed_ha']} ha"
+            )
         where = f" ({', '.join(location)})" if location else ""
         detail = item.get("detail") or ""
         lines.append(
@@ -423,6 +511,10 @@ def compact_diagnostics(diagnostics):
             "table_type",
             "polygon_group",
             "point_count",
+            "declared_ha",
+            "computed_ha",
+            "ratio",
+            "table_title",
             "detail",
         ):
             if key in item:

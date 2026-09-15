@@ -220,12 +220,12 @@ def export_and_scan_kml(pairs):
     )
     with tempfile.TemporaryDirectory() as folder:
         path = os.path.join(folder, "compact.kml")
-        KMLExporter.export(model, path)
+        KMLExporter._write_kml_document(model, path)
         return scan_kml_file(path)
 
 
 class LayoutCapabilityMapTests(unittest.TestCase):
-    def test_eight_difference_classes_are_registered(self):
+    def test_difference_classes_are_registered(self):
         self.assertEqual(
             LAYOUT_CLASS_IDS,
             (
@@ -235,6 +235,7 @@ class LayoutCapabilityMapTests(unittest.TestCase):
                 "crs_inheritance",
                 "ring_geometry",
                 "grouping_typing",
+                "table_vs_polygon_area_qa",
                 "metadata_kml_naming",
                 "coordinate_appendix_index",
             ),
@@ -263,6 +264,14 @@ class LayoutCapabilityMapTests(unittest.TestCase):
         self.assertIn(
             "license_no_missing_flag_for_destekci",
             layout_class("metadata_kml_naming")["capabilities"],
+        )
+        self.assertIn(
+            "block_kml_on_area_mismatch",
+            layout_class("table_vs_polygon_area_qa")["capabilities"],
+        )
+        self.assertIn(
+            "require_ruhsat_and_ced_layers",
+            layout_class("table_vs_polygon_area_qa")["capabilities"],
         )
         self.assertIn(
             "late_caption_not_previous_continuation",
@@ -1647,7 +1656,7 @@ class GroupingTypingClassTests(unittest.TestCase):
         model = ProjectModel("witness.pdf", coordinates, polygons, [])
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "live-stok.kml")
-            KMLExporter.export(model, path)
+            KMLExporter._write_kml_document(model, path)
             kml_text = Path(path).read_text(encoding="utf-8")
         self.assertNotRegex(kml_text, r"9[0-9]\.\d{4} ha")
         self.assertNotRegex(kml_text, r"1[0-4]\d\.\d{4} ha")
@@ -1796,7 +1805,7 @@ class GroupingTypingClassTests(unittest.TestCase):
         model = ProjectModel("witness.pdf", coordinates, polygons, [])
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "live-l-stok.kml")
-            KMLExporter.export(model, path)
+            KMLExporter._write_kml_document(model, path)
             kml_text = Path(path).read_text(encoding="utf-8")
         self.assertNotRegex(kml_text, r"9[0-9]\.\d{4} ha")
         self.assertNotRegex(kml_text, r"1[0-4]\d\.\d{4} ha")
@@ -2193,7 +2202,11 @@ class EntrancePointAndColonDualCrsTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             kml_path = Path(tmp) / "appendix.kml"
-            KMLExporter.export(model, str(kml_path))
+            gate = KMLExporter.export(model, str(kml_path))
+            self.assertFalse(gate["ok"])
+            self.assertIn("MISSING_RUHSAT_OR_CED", gate["codes"])
+            self.assertFalse(kml_path.exists())
+            KMLExporter._write_kml_document(model, str(kml_path))
             tree = ET.parse(kml_path)
         polygons = tree.findall(".//{http://www.opengis.net/kml/2.2}Polygon")
         points = tree.findall(".//{http://www.opengis.net/kml/2.2}Point")
