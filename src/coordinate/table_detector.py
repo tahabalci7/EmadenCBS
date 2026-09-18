@@ -6,6 +6,10 @@ from src.coordinate.state_machine import (
     parse_localized_number,
 )
 from src.coordinate.table_classifier import TableClassifier
+from src.coordinate.table_index import (
+    is_selected_site_body_heading,
+    scope_selected_site_coordinate_text,
+)
 
 
 class TableDetector:
@@ -128,7 +132,17 @@ class TableDetector:
     )
 
     @classmethod
-    def find_tables(cls, text: str):
+    def find_tables(cls, text: str, prefer_appendix_scope=True):
+        if prefer_appendix_scope:
+            scoped = scope_selected_site_coordinate_text(text)
+            if scoped and scoped != text:
+                scoped_tables = cls.find_tables(
+                    scoped,
+                    prefer_appendix_scope=False,
+                )
+                if scoped_tables:
+                    return scoped_tables
+
         lines = [
             line.strip()
             for line in text.splitlines()
@@ -336,6 +350,21 @@ class TableDetector:
                         index += 1
                         continue
 
+                    if cls._should_split_typed_area_heading(
+                        current,
+                        heading_lines,
+                    ):
+                        cls._append_candidate(
+                            tables,
+                            current,
+                        )
+                        current = list(
+                            heading_lines
+                        )
+                        in_table = True
+                        index += 1
+                        continue
+
                     if (
                         cls._current_has_numbered_heading(
                             current
@@ -365,6 +394,16 @@ class TableDetector:
             # ---------------------------------------------
 
             if not in_table:
+                previous_line = ""
+                if index > 0:
+                    previous_line = lines[index - 1]
+                if is_selected_site_body_heading(
+                    line,
+                    previous_line,
+                ):
+                    index += 1
+                    continue
+
                 if cls._looks_like_continuation_start(
                     lines,
                     index,
@@ -535,6 +574,64 @@ class TableDetector:
             return False
 
         return cls._block_has_utm_pairs(lines)
+
+    @classmethod
+    def _should_split_typed_area_heading(
+        cls,
+        current_lines,
+        heading_lines,
+    ):
+        """Unnumbered Ruhsat / ÇED / Ocak captions start a new table.
+
+        Column headings such as Coğrafi Koordinatları stay folded so
+        leftover lon/lat rings keep in-table typing.
+        """
+
+        if not current_lines or not heading_lines:
+            return False
+        if not cls._current_has_table_heading(current_lines):
+            return False
+        if not cls._block_has_utm_pairs(current_lines):
+            return False
+
+        open_type = TableClassifier.classify(
+            "\n".join(current_lines)
+        )
+        upcoming_type = TableClassifier.classify(
+            "\n".join(heading_lines)
+        )
+        if (
+            upcoming_type == "DIGER"
+            or open_type == "DIGER"
+            or upcoming_type == open_type
+        ):
+            return False
+        return True
+
+    @classmethod
+    def _current_has_table_heading(cls, lines):
+        if cls._current_has_numbered_heading(lines):
+            return True
+
+        for index, line in enumerate(lines):
+            if cls.PAGE_MARKER_PATTERN.fullmatch(line):
+                continue
+            previous_upper = ""
+            if index > 0:
+                previous_upper = lines[index - 1].upper()
+            lookback_text = " ".join(
+                cls._preceding_area_heading_lines(
+                    lines,
+                    index,
+                )
+            )
+            if cls._looks_like_table_start(
+                line.upper(),
+                previous_upper,
+                lookback_text,
+            ):
+                return True
+        return False
 
     @classmethod
     def _split_late_caption_body(
@@ -1390,6 +1487,9 @@ class TableDetector:
         }
 
         clean = upper_line.strip()
+
+        if is_selected_site_body_heading(clean):
+            return False
 
         if clean in ignored_column_headings:
             return False

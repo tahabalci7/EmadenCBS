@@ -325,6 +325,18 @@ class LayoutCapabilityMapTests(unittest.TestCase):
             "appendix_pages_beyond_fast_scan",
             layout_class("coordinate_appendix_index")["capabilities"],
         )
+        self.assertIn(
+            "heading_first_selected_site_discovery",
+            layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "collect_all_tables_under_appendix_heading",
+            layout_class("coordinate_appendix_index")["capabilities"],
+        )
+        self.assertIn(
+            "scope_until_next_major_section",
+            layout_class("coordinate_appendix_index")["capabilities"],
+        )
 
     def test_extract_coordinates_still_returns_a_list(self):
         result = CoordinateEngine.extract_coordinates("prose without tables")
@@ -2034,6 +2046,73 @@ class CoordinateAppendixIndexClassTests(unittest.TestCase):
         self.assertNotIn(151, read)
         self.assertIn(165, read)
         self.assertIn(175, read)
+
+    def test_heading_first_collects_all_tables_until_next_section(self):
+        """Body heading, not full-PDF scan, is the primary table source."""
+
+        text = "\n".join(
+            [
+                page(
+                    20,
+                    "Tablo 1.6 Ruhsat Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("E1", "E2", "E3", "E4"),
+                        square_utm(111111, 4111111),
+                    ),
+                ),
+                page(
+                    165,
+                    "EK-1",
+                    "PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI",
+                    *CRS,
+                    "Tablo 1. Ruhsat Alanı Koordinatları",
+                    *stacked_utm_lines(
+                        ("R1", "R2", "R3", "R4"),
+                        square_utm(434529, 4205189),
+                    ),
+                    "Tablo 2. ÇED Alanı Koordinatları",
+                    *stacked_utm_lines(
+                        ("C1", "C2", "C3", "C4"),
+                        square_utm(435000, 4206000, 80),
+                    ),
+                    "Tablo 3. Ocak Alanı Koordinatları",
+                    *stacked_utm_lines(
+                        ("O1", "O2", "O3", "O4"),
+                        square_utm(436000, 4207000, 40),
+                    ),
+                ),
+                page(
+                    180,
+                    "EK-2 PROJE TANITIM DOSYASI",
+                    "Tablo 9. Stok Alanı Koordinatları",
+                    *CRS,
+                    *stacked_utm_lines(
+                        ("X1", "X2", "X3", "X4"),
+                        square_utm(500000, 4100000),
+                    ),
+                ),
+            ]
+        )
+        tables = TableDetector.find_tables(text)
+        types = [
+            TableClassifier.classify(table)
+            for table in tables
+        ]
+        self.assertEqual(
+            types,
+            ["RUHSAT_ALANI", "CED_ALANI", "OCAK_ALANI"],
+        )
+        pipeline = run_coordinate_pipeline(text, tables=tables)
+        polygon_types = {
+            polygon["table_type"]
+            for polygon in pipeline["polygons"]
+        }
+        self.assertEqual(
+            polygon_types,
+            {"RUHSAT_ALANI", "CED_ALANI", "OCAK_ALANI"},
+        )
+        self.assertEqual(len(pipeline["coordinates"]), 12)
 
 
 def hexagon_utm(center_y, center_x, area_ha):
