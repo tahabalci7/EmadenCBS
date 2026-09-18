@@ -64,14 +64,31 @@ TOC_LEAVE_RE = re.compile(
 
 # Appendix label EK-1 / Ek 1- is not folder EK-2 (PTD project type).
 APPENDIX_EK1_RE = re.compile(r"\bEK\s*[-.]?\s*1\b")
+APPENDIX_OTHER_EK_RE = re.compile(r"\bEK\s*[-.]?\s*([2-9]|[1-9]\d)\b")
 APPENDIX_BARE_ONE_RE = re.compile(r"^1\s*[-.)]")
 EK1_APPENDIX_NUMBER = "EK-1"
+PAGE_MARKER_RE = re.compile(
+    r"^--- Sayfa (?P<page>\d+) \[[^\]\r\n]+\] ---$"
+)
+TOC_LEADER_RE = re.compile(r"[\.·…]{3,}\s*\d+(?:\s*[-–/]\s*\d+)?\s*$")
+
+MAJOR_UNRELATED_SECTION_CANONICAL = {
+    "KAYNAKLAR",
+    "KAYNAKCA",
+    "KAYNAKCA LISTESI",
+    "SEKILLER",
+    "SEKIL DIZINI",
+    "SEKILLER DIZINI",
+    "SEKILLER LISTESI",
+}
 
 INDEX_WINDOW_PAGES = 40
 CONTINUATION_BEFORE = 1
 CONTINUATION_AFTER = 3
 APPENDIX_CONTINUATION_BEFORE = 1
 APPENDIX_CONTINUATION_AFTER = 10
+APPENDIX_SECTION_MAX_PAGES = 40
+APPENDIX_BODY_SEARCH_PAGES = 80
 APPENDIX_PEEK_BEFORE = 5
 APPENDIX_PEEK_AFTER = 15
 
@@ -99,6 +116,18 @@ def normalize_tr(value):
     )
     text = text.replace("…", "...")
     text = re.sub(r"[\t\r\n]+", " ", text)
+    text = re.sub(r" +", " ", text)
+    return text.strip()
+
+
+def fold_heading(value):
+    """Turkish fold plus punctuation/OCR noise for appendix headings."""
+
+    text = normalize_tr(value)
+    if not text:
+        return ""
+    text = re.sub(r"(?<=[A-Z])0(?=[A-Z])", "O", text)
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
     text = re.sub(r" +", " ", text)
     return text.strip()
 
@@ -137,29 +166,93 @@ def is_toc_heading(line):
 def is_coordinate_appendix_title(title):
     """Selected-site coordinate appendix, not folder EK-1/EK-2."""
 
-    normalized = normalize_tr(title)
-    if not normalized:
+    folded = fold_heading(title)
+    if not folded:
         return False
 
-    has_coord = "KOORDINAT" in normalized
-    has_selected = "SECILEN YER" in normalized
-    has_ek1 = bool(APPENDIX_EK1_RE.search(normalized))
-    has_bare_one = bool(APPENDIX_BARE_ONE_RE.match(normalized))
+    has_coord = "KOORDINAT" in folded
+    has_selected_yer = "SECILEN YER" in folded
+    has_selected_alan = "SECILEN ALAN" in folded
+    has_proje_icin = "PROJE ICIN" in folded
+    has_ek1 = bool(APPENDIX_EK1_RE.search(folded))
+    has_bare_one = bool(APPENDIX_BARE_ONE_RE.match(folded))
+    has_other_ek = bool(APPENDIX_OTHER_EK_RE.search(folded))
 
-    if has_selected and has_coord:
+    if has_other_ek and not has_ek1:
+        return False
+    if has_selected_yer and has_coord:
+        return True
+    if has_selected_alan and has_coord and (has_ek1 or has_proje_icin):
         return True
     if has_ek1 and has_coord:
         return True
-    if has_ek1 and has_selected:
+    if has_ek1 and has_selected_yer:
         return True
-    if has_bare_one and has_selected and has_coord:
+    if has_bare_one and has_selected_yer and has_coord:
         return True
     return False
 
 
+def is_toc_style_line(line):
+    """İÇİNDEKİLER dotted leader + page number, not the body heading."""
+
+    text = str(line or "").strip()
+    if not text:
+        return False
+    if TOC_LEADER_RE.search(text):
+        return True
+    normalized = normalize_tr(text)
+    match = APPENDIX_PAGE_TAIL_RE.match(normalized)
+    if match is None:
+        return False
+    title = match.group("title") or ""
+    page = match.group("page") or ""
+    if not page or not is_coordinate_appendix_title(title):
+        return False
+    return bool(re.search(r"[\.·…]{2,}", text))
+
+
+def is_major_unrelated_section(line):
+    """Next appendix/bibliography heading; not EK-1 itself."""
+
+    folded = fold_heading(line)
+    if not folded:
+        return False
+    if is_coordinate_appendix_title(line):
+        return False
+    if APPENDIX_OTHER_EK_RE.search(folded):
+        return True
+    if folded in MAJOR_UNRELATED_SECTION_CANONICAL:
+        return True
+    return any(
+        folded.startswith(heading + " ")
+        for heading in MAJOR_UNRELATED_SECTION_CANONICAL
+    )
+
+
+def is_selected_site_body_heading(line, previous_line=None):
+    """Body heading for the selected-site coordinate appendix."""
+
+    if is_toc_style_line(line):
+        return False
+    if is_coordinate_appendix_title(line):
+        return True
+    previous = str(previous_line or "").strip()
+    if not previous or is_toc_style_line(previous):
+        return False
+    joined = previous + " " + str(line or "")
+    if is_toc_style_line(joined):
+        return False
+    return is_coordinate_appendix_title(joined)
+
+
 def is_coordinate_appendix_body(text):
+    if page_has_selected_site_body_heading(text):
+        return True
     normalized = normalize_tr(text)
     if not normalized:
+        return False
+    if is_toc_style_line(normalized) and "\n" not in str(text or ""):
         return False
     if "SECILEN YERIN KOORDINAT" in normalized:
         return True
@@ -168,7 +261,175 @@ def is_coordinate_appendix_body(text):
         and "KOORDINAT" in normalized
     ):
         return True
+    if (
+        "PROJE ICIN SECILEN ALAN" in normalized
+        and "KOORDINAT" in normalized
+    ):
+        return True
     return False
+
+
+def page_has_selected_site_body_heading(text):
+    lines = [
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip()
+    ]
+    previous = None
+    for line in lines:
+        if PAGE_MARKER_RE.fullmatch(line):
+            previous = None
+            continue
+        if is_selected_site_body_heading(line, previous):
+            return True
+        previous = line
+    return False
+
+
+def page_starts_major_unrelated_section(text):
+    lines = [
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip() and not PAGE_MARKER_RE.fullmatch(line.strip())
+    ]
+    if not lines:
+        return False
+    window = lines[:8]
+    for index, line in enumerate(window):
+        previous = window[index - 1] if index else None
+        if is_selected_site_body_heading(line, previous):
+            return False
+        if is_major_unrelated_section(line):
+            return True
+        if previous and is_major_unrelated_section(
+            previous + " " + line
+        ):
+            return True
+    return False
+
+
+def find_selected_site_section_span(lines):
+    """Line span from the body heading until the next major section."""
+
+    cleaned = [
+        str(line).strip()
+        for line in lines
+        if str(line).strip()
+    ]
+    start = None
+    previous = None
+    for index, line in enumerate(cleaned):
+        if PAGE_MARKER_RE.fullmatch(line):
+            previous = None
+            continue
+        if is_selected_site_body_heading(line, previous):
+            start = index
+            if previous and is_coordinate_appendix_title(
+                previous + " " + line
+            ):
+                start = index - 1
+            break
+        previous = line
+
+    if start is None:
+        return None
+
+    for index in range(start, -1, -1):
+        if PAGE_MARKER_RE.fullmatch(cleaned[index]):
+            start = index
+            break
+
+    end = len(cleaned)
+    previous = None
+    for index in range(start + 1, len(cleaned)):
+        line = cleaned[index]
+        if PAGE_MARKER_RE.fullmatch(line):
+            previous = None
+            continue
+        if is_major_unrelated_section(line) or (
+            previous
+            and is_major_unrelated_section(previous + " " + line)
+        ):
+            end = index
+            break
+        previous = line
+    return start, end
+
+
+def scope_selected_site_coordinate_text(text):
+    """Slice extracted text to the selected-site appendix block."""
+
+    if not str(text or "").strip():
+        return None
+    lines = [
+        line.strip()
+        for line in str(text).splitlines()
+        if line.strip()
+    ]
+    span = find_selected_site_section_span(lines)
+    if span is None:
+        return None
+    start, end = span
+    scoped = "\n".join(lines[start:end]).strip()
+    if not scoped:
+        return None
+    return scoped
+
+
+def extend_appendix_section_pages(
+    start_page,
+    page_count,
+    page_text_lookup,
+    before=APPENDIX_CONTINUATION_BEFORE,
+    max_pages=APPENDIX_SECTION_MAX_PAGES,
+):
+    """Pages from the heading until the next unrelated major section."""
+
+    if not isinstance(start_page, int) or start_page < 1:
+        return []
+    count = int(page_count or 0)
+    start = max(1, start_page - int(before or 0))
+    if count:
+        start = min(start, count)
+    pages = list(range(start, start_page + 1))
+    limit = start_page + int(max_pages or 0)
+    if count:
+        limit = min(limit, count)
+    for physical_page in range(start_page + 1, limit + 1):
+        text = ""
+        if page_text_lookup is not None:
+            text = page_text_lookup(physical_page) or ""
+        if page_starts_major_unrelated_section(text):
+            break
+        pages.append(physical_page)
+    return pages
+
+
+def locate_selected_site_heading_page(
+    page_count,
+    page_text_lookup,
+    skip_pages=None,
+):
+    """Find the body heading, late pages first — not a full-table scan."""
+
+    skip = set(skip_pages or [])
+    count = int(page_count or 0)
+    if count < 1:
+        return []
+
+    search_start = max(
+        INDEX_WINDOW_PAGES + 1,
+        count - APPENDIX_BODY_SEARCH_PAGES + 1,
+    )
+    for physical_page in range(count, search_start - 1, -1):
+        if physical_page in skip:
+            continue
+        text = ""
+        if page_text_lookup is not None:
+            text = page_text_lookup(physical_page) or ""
+        if page_has_selected_site_body_heading(text):
+            return [physical_page]
+    return []
 
 
 def parse_printed_page(page_text):
@@ -629,14 +890,6 @@ class TableIndexLocator:
             )
             skip_pages = sorted(set(index_page_numbers) | set(toc_pages))
 
-            if not geometry_entries and not appendix_entries:
-                return {
-                    **empty,
-                    "index_found": bool(index_page_numbers),
-                    "index_pages": index_page_numbers,
-                    "page_count": page_count,
-                }
-
             body_pages = []
             if geometry_entries:
                 for index in range(page_count):
@@ -717,33 +970,63 @@ class TableIndexLocator:
                         clone["page_offset"] = None
                         clone["resolve_kind"] = "UNRESOLVED"
                     resolved_appendix.append(clone)
+
+            physical_pages = [
+                entry["physical_page"]
+                for entry in resolved
+                if entry.get("physical_page") is not None
+            ]
+            appendix_pages = [
+                entry["physical_page"]
+                for entry in resolved_appendix
+                if entry.get("physical_page") is not None
+            ]
+            page_text_cache = {
+                page["physical_page"]: page.get("text") or ""
+                for page in body_pages
+            }
+
+            def page_text_lookup(physical_page):
+                if physical_page in page_text_cache:
+                    return page_text_cache[physical_page]
+                try:
+                    text = document[physical_page - 1].get_text(
+                        "text"
+                    ) or ""
+                except Exception:
+                    text = ""
+                page_text_cache[physical_page] = text
+                return text
+
+            if not appendix_pages:
+                appendix_pages = locate_selected_site_heading_page(
+                    page_count,
+                    page_text_lookup,
+                    skip_pages=skip_pages,
+                )
+
+            appendix_section_pages = []
+            for start_page in appendix_pages:
+                appendix_section_pages.extend(
+                    extend_appendix_section_pages(
+                        start_page,
+                        page_count,
+                        page_text_lookup,
+                    )
+                )
+
+            target_pages = sorted(
+                set(expand_pages(physical_pages, page_count))
+                | set(appendix_section_pages)
+            )
         finally:
             document.close()
 
-        physical_pages = [
-            entry["physical_page"]
-            for entry in resolved
-            if entry.get("physical_page") is not None
-        ]
-        appendix_pages = [
-            entry["physical_page"]
-            for entry in resolved_appendix
-            if entry.get("physical_page") is not None
-        ]
-        target_pages = sorted(
-            set(expand_pages(physical_pages, page_count))
-            | set(
-                expand_pages(
-                    appendix_pages,
-                    page_count,
-                    before=APPENDIX_CONTINUATION_BEFORE,
-                    after=APPENDIX_CONTINUATION_AFTER,
-                )
-            )
-        )
         return {
             "index_found": bool(
-                index_page_numbers or appendix_entries
+                index_page_numbers
+                or appendix_entries
+                or appendix_section_pages
             ),
             "index_pages": index_page_numbers,
             "geometry_entries": resolved,

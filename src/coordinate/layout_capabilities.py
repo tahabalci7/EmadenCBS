@@ -247,18 +247,25 @@ LAYOUT_CLASSES = (
         "title": "EK-1 selected-site coordinate appendix",
         "modules": (
             "src.coordinate.table_index",
+            "src.coordinate.table_detector",
         ),
         "capabilities": (
             "toc_ek1_appendix_to_target_pages",
             "appendix_pages_beyond_fast_scan",
+            "heading_first_selected_site_discovery",
+            "collect_all_tables_under_appendix_heading",
+            "scope_until_next_major_section",
         ),
         "contract": (
-            "İÇİNDEKİLER / TOC entries for the selected-site "
-            "coordinate appendix (EK-1 / Ek 1- / 1- Proje için "
-            "seçilen yerin koordinatları) add those pages to "
-            "target_pages even when they are beyond the fast-scan "
-            "max_pages window (150). Folder EK-2 (PTD project type) "
-            "is not the same as this appendix label EK-1."
+            "Discover PROJE İÇİN SEÇİLEN YERİN KOORDİNATLARI "
+            "(and EK-1 / SEÇİLEN YER / SEÇİLEN ALAN variants) first, "
+            "then collect every coordinate table under that body "
+            "heading until the next major unrelated section (EK-2, "
+            "KAYNAKLAR). İÇİNDEKİLER dotted leaders are not the body "
+            "start. Folder EK-2 (PTD project type) is not appendix "
+            "EK-1. Full start-to-end PDF scanning is fallback, not "
+            "the primary discovery path. RUHSAT / ÇED / facility "
+            "typing stays with the existing classifier."
         ),
     },
 )
